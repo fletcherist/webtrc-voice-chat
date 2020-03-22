@@ -54,6 +54,8 @@ Logs<br />
         });
         const json = await res.json();
         console.log("offer request sent", json);
+
+        pc.setRemoteDescription(new RTCSessionDescription(json));
       } catch (error) {
         console.error(error);
       }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,20 +44,8 @@ func MustReadStdin() string {
 	return in
 }
 
-// Encode encodes the input in base64
-// It can optionally zip the input before encoding
-func Encode(obj interface{}) string {
-	b, err := json.Marshal(obj)
-	if err != nil {
-		panic(err)
-	}
-
-	return base64.StdEncoding.EncodeToString(b)
-}
-
-func HandleOffer() {
+func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
 	// Wait for the offer to be pasted
-	offer := webrtc.SessionDescription{}
 	// Decode(MustReadStdin(), &offer)
 
 	// We make our own mediaEngine so we can place the sender's codecs in it. Since we are echoing their RTP packet
@@ -166,7 +153,7 @@ func HandleOffer() {
 	}
 
 	// Output the answer in base64 so we can paste it in browser
-	fmt.Println(Encode(answer))
+	return &answer
 }
 
 func main() {
@@ -179,16 +166,17 @@ func main() {
 			return
 		}
 		// buf := make([]byte, )
-		var obj webrtc.SessionDescription
-		err := json.NewDecoder(r.Body).Decode(&obj)
+		var offer webrtc.SessionDescription
+		err := json.NewDecoder(r.Body).Decode(&offer)
 		if err != nil {
 			http.Error(w, "invalid offer format", 400)
 			return
 		}
 
+		answer := HandleOffer(offer)
 		// json.Marshal(obj)
 		// io.Write(w, `{"ok": true}`)
-		bytes, err := json.Marshal(obj)
+		bytes, err := json.Marshal(answer)
 		if err != nil {
 			http.Error(w, "server error", 500)
 			return
