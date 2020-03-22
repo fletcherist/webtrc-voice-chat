@@ -62,9 +62,9 @@ func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
 	}
 
 	// webrtc.RTPCodecTypeAudio
-	videoCodecs := mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeVideo)
-	if len(videoCodecs) == 0 {
-		panic("Offer contained no video codecs")
+	audioCodecs := mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio)
+	if len(audioCodecs) == 0 {
+		panic("Offer contained no audio codecs")
 	}
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
@@ -85,7 +85,7 @@ func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
 	}
 
 	// Create Track that we send video back to browser on
-	outputTrack, err := peerConnection.NewTrack(videoCodecs[0].PayloadType, rand.Uint32(), "video", "pion")
+	outputTrack, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "video", "pion")
 	if err != nil {
 		panic(err)
 	}

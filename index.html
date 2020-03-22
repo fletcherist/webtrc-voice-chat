@@ -28,7 +28,7 @@ Logs<br />
   };
 
   navigator.mediaDevices
-    .getUserMedia({ video: true, audio: true })
+    .getUserMedia({ audio: true })
     .then(stream => {
       pc.addStream(stream);
       pc.createOffer()
