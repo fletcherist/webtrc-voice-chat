@@ -121,14 +121,13 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 		}()
 
 		fmt.Printf("Track has started, of type %d: %s \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name)
+
 		for {
 			// Read RTP packets being sent to Pion
 			rtp, readErr := remoteTrack.ReadRTP()
 			if readErr != nil {
 				panic(readErr)
 			}
-			// fmt.Println(rtp)
-			// audioChan <- rtp
 			// Replace the SSRC with the SSRC of the outbound track.
 			// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
 			rtp.SSRC = room.Track.SSRC()
@@ -136,10 +135,6 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 			if writeErr := room.Track.WriteRTP(rtp); writeErr != nil {
 				panic(writeErr)
 			}
-			// outcoming traffic
-			// if writeErr := outputTrack.WriteRTP(rtp); writeErr != nil {
-			// 	panic(writeErr)
-			// }
 		}
 	})
 
