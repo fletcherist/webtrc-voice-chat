@@ -1,17 +1,16 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc"
 
 	"net/http"
@@ -20,33 +19,53 @@ import (
 // Allows compressing offer/answer to bypass terminal input limits.
 const compress = false
 
-// MustReadStdin blocks until input is received from stdin
-func MustReadStdin() string {
-	r := bufio.NewReader(os.Stdin)
+var audioChan = make(chan *rtp.Packet)
 
-	var in string
-	for {
-		var err error
-		in, err = r.ReadString('\n')
-		if err != io.EOF {
-			if err != nil {
-				panic(err)
-			}
-		}
-		in = strings.TrimSpace(in)
-		if len(in) > 0 {
-			break
-		}
-	}
-
-	fmt.Println("")
-
-	return in
+// Room is a voice chat room
+type Room struct {
+	MembersCount uint
+	Track        *webrtc.Track
 }
 
-func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
+var room Room
+
+// Prepare the configuration
+var peerConnectionConfig = webrtc.Configuration{
+	ICEServers: []webrtc.ICEServer{
+		{
+			URLs: []string{"stun:stun.l.google.com:19302"},
+		},
+	},
+}
+
+func (r *Room) CreateBroadcastTrack() error {
+	mediaEngine := webrtc.MediaEngine{}
+	mediaEngine.RegisterDefaultCodecs()
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
+	// Create a new RTCPeerConnection
+	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
+	if err != nil {
+		return err
+	}
+
+	audioCodecs := mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio)
+	if len(audioCodecs) == 0 {
+		return errors.New("Offer contained no audio codecs")
+	}
+	// Create Track that we audio back to client on
+	outputTrack, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
+	if err != nil {
+		return err
+	}
+	r.Track = outputTrack
+	return nil
+}
+
+func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	// Wait for the offer to be pasted
-	// Decode(MustReadStdin(), &offer)
+	fmt.Println("user joined, increment members count")
+	room.MembersCount++
+	fmt.Println("now members count is", room.MembersCount)
 
 	// We make our own mediaEngine so we can place the sender's codecs in it. Since we are echoing their RTP packet
 	// back to them we are actually codec agnostic - we can accept all their codecs. This also ensures that we use the
@@ -58,52 +77,40 @@ func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
 	// cannot tell it not to. The audio SDP must match the sender's codecs too...
 	err := mediaEngine.PopulateFromSDP(offer)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	// webrtc.RTPCodecTypeAudio
 	audioCodecs := mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio)
 	if len(audioCodecs) == 0 {
-		panic("Offer contained no audio codecs")
+		return nil, errors.New("Offer contained no audio codecs")
 	}
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 
-	// Prepare the configuration
-	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
-		},
-	}
-
 	// Create a new RTCPeerConnection
-	peerConnection, err := api.NewPeerConnection(config)
+	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-
-	// Create Track that we send video back to browser on
-	outputTrack, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "video", "pion")
+	// Create Track that we audio back to client on
+	incomingVoice, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-
 	// Add this newly created track to the PeerConnection
-	if _, err = peerConnection.AddTrack(outputTrack); err != nil {
-		panic(err)
+	if _, err = peerConnection.AddTrack(incomingVoice); err != nil {
+		return nil, err
 	}
-
 	// Set the remote SessionDescription
 	err = peerConnection.SetRemoteDescription(offer)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
 	peerConnection.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
+		fmt.Println("peerConnection.OnTrack")
 		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
 		// This is a temporary fix until we implement incoming RTCP events, then we would push a PLI only when a viewer requests it
 		go func() {
@@ -117,20 +124,28 @@ func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
 		}()
 
 		fmt.Printf("Track has started, of type %d: %s \n", track.PayloadType(), track.Codec().Name)
+		count := 0
 		for {
 			// Read RTP packets being sent to Pion
 			rtp, readErr := track.ReadRTP()
 			if readErr != nil {
 				panic(readErr)
 			}
-
+			// fmt.Println(count)
+			count++
+			// fmt.Println(rtp)
+			// audioChan <- rtp
 			// Replace the SSRC with the SSRC of the outbound track.
 			// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
-			rtp.SSRC = outputTrack.SSRC()
+			rtp.SSRC = incomingVoice.SSRC()
 
-			if writeErr := outputTrack.WriteRTP(rtp); writeErr != nil {
+			if writeErr := incomingVoice.WriteRTP(rtp); writeErr != nil {
 				panic(writeErr)
 			}
+			// outcoming traffic
+			// if writeErr := outputTrack.WriteRTP(rtp); writeErr != nil {
+			// 	panic(writeErr)
+			// }
 		}
 	})
 
@@ -139,24 +154,23 @@ func HandleOffer(offer webrtc.SessionDescription) *webrtc.SessionDescription {
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		fmt.Printf("Connection State has changed %s \n", connectionState.String())
 	})
-
 	// Create an answer
 	answer, err := peerConnection.CreateAnswer(nil)
 	if err != nil {
 		panic(err)
 	}
-
 	// Sets the LocalDescription, and starts our UDP listeners
 	err = peerConnection.SetLocalDescription(answer)
 	if err != nil {
 		panic(err)
 	}
-
 	// Output the answer in base64 so we can paste it in browser
-	return &answer
+	return &answer, nil
 }
 
 func main() {
+	room.CreateBroadcastTrack()
+
 	handlePing := func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "pong")
 	}
@@ -165,6 +179,8 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Add("Access-Control-Allow-Headers", "*")
+		w.Header().Add("Access-Control-Allow-Origin", "*")
 		// buf := make([]byte, )
 		var offer webrtc.SessionDescription
 		err := json.NewDecoder(r.Body).Decode(&offer)
@@ -173,12 +189,16 @@ func main() {
 			return
 		}
 
-		answer := HandleOffer(offer)
+		answer, err := room.AddMember(offer)
+		if err != nil {
+			http.Error(w, fmt.Sprint("cant accept offer:", err), http.StatusBadRequest)
+			return
+		}
 		// json.Marshal(obj)
 		// io.Write(w, `{"ok": true}`)
 		bytes, err := json.Marshal(answer)
 		if err != nil {
-			http.Error(w, "server error", 500)
+			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(200)
