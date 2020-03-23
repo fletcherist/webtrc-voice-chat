@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/pion/rtcp"
@@ -203,8 +204,12 @@ func main() {
 		w.Write(bytes)
 		return
 	}
-	port := 8080
-	addr := fmt.Sprintf(":%d", port)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+		log.Printf("Defaulting to port %s", port)
+	}
+	addr := fmt.Sprintf(":%s", port)
 	fmt.Printf("listening on %s\n", addr)
 	http.HandleFunc("/", handlePing)
 	http.HandleFunc("/offer", handleOffer)
