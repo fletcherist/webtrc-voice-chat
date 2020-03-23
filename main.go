@@ -63,9 +63,6 @@ func (r *Room) CreateBroadcastTrack() error {
 
 func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	// Wait for the offer to be pasted
-	fmt.Println("user joined, increment members count")
-	room.MembersCount++
-	fmt.Println("now members count is", room.MembersCount)
 
 	// We make our own mediaEngine so we can place the sender's codecs in it. Since we are echoing their RTP packet
 	// back to them we are actually codec agnostic - we can accept all their codecs. This also ensures that we use the
@@ -93,12 +90,12 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 		return nil, err
 	}
 	// Create Track that we audio back to client on
-	incomingVoice, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
-	if err != nil {
-		return nil, err
-	}
+	// incomingVoice, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// Add this newly created track to the PeerConnection
-	if _, err = peerConnection.AddTrack(incomingVoice); err != nil {
+	if _, err = peerConnection.AddTrack(room.Track); err != nil {
 		return nil, err
 	}
 	// Set the remote SessionDescription
@@ -109,37 +106,34 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
-	peerConnection.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
+	peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
 		fmt.Println("peerConnection.OnTrack")
 		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
 		// This is a temporary fix until we implement incoming RTCP events, then we would push a PLI only when a viewer requests it
 		go func() {
 			ticker := time.NewTicker(time.Second * 3)
 			for range ticker.C {
-				errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: track.SSRC()}})
+				errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: remoteTrack.SSRC()}})
 				if errSend != nil {
 					fmt.Println(errSend)
 				}
 			}
 		}()
 
-		fmt.Printf("Track has started, of type %d: %s \n", track.PayloadType(), track.Codec().Name)
-		count := 0
+		fmt.Printf("Track has started, of type %d: %s \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name)
 		for {
 			// Read RTP packets being sent to Pion
-			rtp, readErr := track.ReadRTP()
+			rtp, readErr := remoteTrack.ReadRTP()
 			if readErr != nil {
 				panic(readErr)
 			}
-			// fmt.Println(count)
-			count++
 			// fmt.Println(rtp)
 			// audioChan <- rtp
 			// Replace the SSRC with the SSRC of the outbound track.
 			// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
-			rtp.SSRC = incomingVoice.SSRC()
+			rtp.SSRC = room.Track.SSRC()
 
-			if writeErr := incomingVoice.WriteRTP(rtp); writeErr != nil {
+			if writeErr := room.Track.WriteRTP(rtp); writeErr != nil {
 				panic(writeErr)
 			}
 			// outcoming traffic
@@ -153,6 +147,15 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		fmt.Printf("Connection State has changed %s \n", connectionState.String())
+		if connectionState == webrtc.ICEConnectionStateConnected {
+			fmt.Println("user joined")
+			room.MembersCount++
+			fmt.Println("now members count is", room.MembersCount)
+		} else if connectionState == webrtc.ICEConnectionStateDisconnected {
+			fmt.Println("user leaved")
+			room.MembersCount--
+			fmt.Println("now members count is", room.MembersCount)
+		}
 	})
 	// Create an answer
 	answer, err := peerConnection.CreateAnswer(nil)
