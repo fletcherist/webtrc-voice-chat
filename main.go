@@ -22,14 +22,6 @@ const compress = false
 
 var audioChan = make(chan *rtp.Packet)
 
-// Room is a voice chat room
-type Room struct {
-	MembersCount uint
-	Track        *webrtc.Track
-}
-
-var room Room
-
 // Prepare the configuration
 var peerConnectionConfig = webrtc.Configuration{
 	ICEServers: []webrtc.ICEServer{
@@ -39,30 +31,32 @@ var peerConnectionConfig = webrtc.Configuration{
 	},
 }
 
-func (r *Room) CreateBroadcastTrack() error {
-	mediaEngine := webrtc.MediaEngine{}
-	mediaEngine.RegisterDefaultCodecs()
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
-	// Create a new RTCPeerConnection
-	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
-	if err != nil {
-		return err
-	}
-
-	audioCodecs := mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio)
-	if len(audioCodecs) == 0 {
-		return errors.New("Offer contained no audio codecs")
-	}
-	// Create Track that we audio back to client on
-	outputTrack, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
-	if err != nil {
-		return err
-	}
-	r.Track = outputTrack
-	return nil
+// User is a member of chat room
+type User struct {
+	ID    int64
+	Track *webrtc.Track
 }
 
-func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+// Room is a voice chat room
+type Room struct {
+	Users map[int64]*User
+}
+
+var room = Room{
+	Users: make(map[int64]*User),
+}
+
+// GetUsers converts map[int64]*User to list
+func (r *Room) GetUsers() []*User {
+	users := []*User{}
+	for _, user := range r.Users {
+		users = append(users, user)
+	}
+	return users
+}
+
+// AddUser adds user to the room
+func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	// Wait for the offer to be pasted
 
 	// We make our own mediaEngine so we can place the sender's codecs in it. Since we are echoing their RTP packet
@@ -91,19 +85,27 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 		return nil, err
 	}
 	// Create Track that we audio back to client on
-	// incomingVoice, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// Add this newly created track to the PeerConnection
-	if _, err = peerConnection.AddTrack(room.Track); err != nil {
+	userTrack, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
+	if err != nil {
 		return nil, err
 	}
+
+	// Add this newly created track to the PeerConnection
+	if _, err = peerConnection.AddTrack(userTrack); err != nil {
+		return nil, err
+	}
+
 	// Set the remote SessionDescription
 	err = peerConnection.SetRemoteDescription(offer)
 	if err != nil {
 		return nil, err
 	}
+
+	user := User{
+		ID:    time.Now().UnixNano(),
+		Track: userTrack,
+	}
+	r.Users[user.ID] = &user
 
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
@@ -129,12 +131,19 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 			if readErr != nil {
 				panic(readErr)
 			}
-			// Replace the SSRC with the SSRC of the outbound track.
-			// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
-			rtp.SSRC = room.Track.SSRC()
 
-			if writeErr := room.Track.WriteRTP(rtp); writeErr != nil {
-				panic(writeErr)
+			for _, roomUser := range r.GetUsers() {
+				// dont send rtp packets to owner
+				if roomUser.ID == user.ID {
+					continue
+				}
+				// Replace the SSRC with the SSRC of the outbound track.
+				// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
+				rtp.SSRC = roomUser.Track.SSRC()
+
+				if writeErr := roomUser.Track.WriteRTP(rtp); writeErr != nil {
+					panic(writeErr)
+				}
 			}
 		}
 	})
@@ -145,12 +154,12 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 		fmt.Printf("Connection State has changed %s \n", connectionState.String())
 		if connectionState == webrtc.ICEConnectionStateConnected {
 			fmt.Println("user joined")
-			room.MembersCount++
-			fmt.Println("now members count is", room.MembersCount)
+			// room.MembersCount++
+			fmt.Println("now members count is", len(room.GetUsers()))
 		} else if connectionState == webrtc.ICEConnectionStateDisconnected {
 			fmt.Println("user leaved")
-			room.MembersCount--
-			fmt.Println("now members count is", room.MembersCount)
+			delete(r.Users, user.ID)
+			fmt.Println("now members count is", len(room.GetUsers()))
 		}
 	})
 	// Create an answer
@@ -163,12 +172,12 @@ func (r *Room) AddMember(offer webrtc.SessionDescription) (*webrtc.SessionDescri
 	if err != nil {
 		panic(err)
 	}
+
 	// Output the answer in base64 so we can paste it in browser
 	return &answer, nil
 }
 
 func main() {
-	room.CreateBroadcastTrack()
 
 	handlePing := func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "pong")
@@ -189,7 +198,7 @@ func main() {
 			return
 		}
 
-		answer, err := room.AddMember(offer)
+		answer, err := room.AddUser(offer)
 		if err != nil {
 			http.Error(w, fmt.Sprint("cant accept offer:", err), http.StatusBadRequest)
 			return
