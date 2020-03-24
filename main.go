@@ -174,12 +174,13 @@ func main() {
 		io.WriteString(w, "pong")
 	}
 	handleOffer := func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("server: icoming offer request")
+		w.Header().Add("Access-Control-Allow-Headers", "*")
+		w.Header().Add("Access-Control-Allow-Origin", "*")
 		if r.Method != "POST" {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Add("Access-Control-Allow-Headers", "*")
-		w.Header().Add("Access-Control-Allow-Origin", "*")
 		// buf := make([]byte, )
 		var offer webrtc.SessionDescription
 		err := json.NewDecoder(r.Body).Decode(&offer)
