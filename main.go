@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,16 +10,10 @@ import (
 	"time"
 
 	"github.com/pion/rtcp"
-	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v2"
 
 	"net/http"
 )
-
-// Allows compressing offer/answer to bypass terminal input limits.
-const compress = false
-
-var audioChan = make(chan *rtp.Packet)
 
 // Prepare the configuration
 var peerConnectionConfig = webrtc.Configuration{
@@ -33,8 +26,9 @@ var peerConnectionConfig = webrtc.Configuration{
 
 // User is a member of chat room
 type User struct {
-	ID    int64
-	Track *webrtc.Track
+	ID             int64
+	Track          *webrtc.Track
+	PeerConnection *webrtc.PeerConnection
 }
 
 // Room is a voice chat room
@@ -63,18 +57,20 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 	// back to them we are actually codec agnostic - we can accept all their codecs. This also ensures that we use the
 	// dynamic media type from the sender in our answer.
 	mediaEngine := webrtc.MediaEngine{}
+	mediaEngine.PopulateFromSDP(offer)
 
-	// Add codecs to the mediaEngine. Note that even though we are only going to echo back the sender's video we also
-	// add audio codecs. This is because createAnswer will create an audioTransceiver and associated SDP and we currently
-	// cannot tell it not to. The audio SDP must match the sender's codecs too...
-	err := mediaEngine.PopulateFromSDP(offer)
-	if err != nil {
-		return nil, err
+	// Search for Payload type. If the offer doesn't support codec exit since
+	// since they won't be able to decode anything we send them
+	var payloadType uint8
+	for _, audioCodec := range mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio) {
+		fmt.Println(audioCodec.Name)
+		if audioCodec.Name == "OPUS" {
+			payloadType = audioCodec.PayloadType
+			break
+		}
 	}
-
-	audioCodecs := mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio)
-	if len(audioCodecs) == 0 {
-		return nil, errors.New("Offer contained no audio codecs")
+	if payloadType == 0 {
+		return nil, fmt.Errorf("Remote peer does not support codec")
 	}
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
@@ -84,8 +80,9 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 	if err != nil {
 		return nil, err
 	}
+
 	// Create Track that we audio back to client on
-	userTrack, err := peerConnection.NewTrack(audioCodecs[0].PayloadType, rand.Uint32(), "audio", "pion")
+	userTrack, err := peerConnection.NewTrack(payloadType, rand.Uint32(), "audio", "pion")
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +104,61 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 	}
 	r.Users[user.ID] = &user
 
+	// receivers := peerConnection.GetReceivers()
+	// receivers[0].
+
+	// senders := peerConnection.GetSenders()
+	// senders[0].Track().WriteSample()
+
+	// go func() {
+	// 	// file, _ := os.Open("test.wav")
+	// 	// reader := wav.NewReader(file)
+
+	// 	// defer file.Close()
+
+	// 	// for {
+	// 	// 	samples, err := reader.ReadSamples()
+	// 	// 	reader.Read()
+	// 	// 	if err == io.EOF {
+	// 	// 		break
+	// 	// 	}
+
+	// 	// 	for _, sample := range samples {
+	// 	// 		// fmt.Printf("L/R: %d/%d\n", reader.IntValue(sample, 0), reader.IntValue(sample, 1))
+	// 	// 		err := user.Track.WriteSample(media.Sample{Data: sample.Values, Samples: sampleRate / 8 * 2})
+	// 	// 		// _, err := user.Track.Write(sample)
+	// 	// 		if err != nil {
+	// 	// 			panic(err)
+	// 	// 		}
+	// 	// 	}
+	// 	// }
+
+	// 	for {
+	// 		var sample []byte = make([]byte, 32/8)
+	// 		_, err = rand.Read(sample)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		// 48000 times in a second need to write to buffer
+	// 		// so need to sleep
+
+	// 		// if need write 10 times in second it would be time.Millisecond / 5
+
+	// 		// fmt.Println("sample", sample)
+
+	// 		time.Sleep(time.Millisecond * 1)
+
+	// 		// send white noise to the channel
+
+	// 		err := user.Track.WriteSample(media.Sample{Data: sample, Samples: 1})
+	// 		// _, err := user.Track.Write(sample)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		// time.Sleep(time.Second)
+	// 	}
+	// }()
+
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
 	peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
@@ -125,27 +177,109 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 
 		fmt.Printf("Track has started, of type %d: %s \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name)
 
+		// rtpBuf := make([]byte, 1400)
+		// for {
+		// 	i, readErr := remoteTrack.Read(rtpBuf)
+		// 	if readErr != nil {
+		// 		panic(readErr)
+		// 	}
+		// 	for _, roomUser := range r.GetUsers() {
+		// 		if roomUser.ID == user.ID {
+		// 			continue
+		// 		}
+		// 		// ErrClosedPipe means we don't have any subscribers, this is ok if no peers have connected yet
+		// 		if _, err = roomUser.Track.Write(rtpBuf[:i]); err != nil && err != io.ErrClosedPipe {
+		// 			panic(err)
+		// 		}
+		// 	}
+		// }
+
+		// for {
+		// 	// Read RTP packets being sent to Pion
+		// 	rtpPacket, readErr := remoteTrack.ReadRTP()
+		// 	if readErr != nil {
+		// 		panic(readErr)
+		// 	}
+		// 	for _, roomUser := range r.GetUsers() {
+		// 		// dont send rtp packets to owner
+		// 		if roomUser.ID == user.ID {
+		// 			continue
+		// 		}
+		// 		// buf := make([]byte, 1400)
+		// 		rtpPacket.SSRC = roomUser.Track.SSRC()
+		// 		buf, err := rtpPacket.Marshal()
+		// 		if err != nil {
+		// 			fmt.Println("err marhall rtp")
+		// 			continue
+		// 		}
+		// 		if _, writeErr := roomUser.Track.Write(buf); writeErr != nil && writeErr != io.ErrClosedPipe {
+		// 			// panic(writeErr)
+		// 			fmt.Println("error writing rtp packet", writeErr)
+		// 		}
+		// 	}
+		// }
+
 		for {
 			// Read RTP packets being sent to Pion
-			rtp, readErr := remoteTrack.ReadRTP()
+			rtpPacket, readErr := remoteTrack.ReadRTP()
 			if readErr != nil {
 				panic(readErr)
 			}
 
-			for _, roomUser := range r.GetUsers() {
+			users := r.GetUsers()
+			usersCSRC := []uint32{}
+			for _, user := range users {
+				usersCSRC = append(usersCSRC, user.Track.SSRC())
+			}
+			for _, roomUser := range users {
 				// dont send rtp packets to owner
 				if roomUser.ID == user.ID {
 					continue
 				}
-				// Replace the SSRC with the SSRC of the outbound track.
-				// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
-				rtp.SSRC = roomUser.Track.SSRC()
-
-				if writeErr := roomUser.Track.WriteRTP(rtp); writeErr != nil {
-					panic(writeErr)
+				rtpPacket.CSRC = usersCSRC
+				fmt.Println("remoteTrack.SSRC", remoteTrack.SSRC(), "rtpPacket.CSRC", rtpPacket.CSRC)
+				// write empty rtp packet
+				// roomUser.Track.WriteSample(media.Sample{Data: []byte{}, Samples: 0})
+				if writeErr := roomUser.Track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
+					// panic(writeErr)
+					fmt.Println("error writing rtp packet", writeErr)
 				}
 			}
 		}
+
+		// for {
+		// 	// Read RTP packets being sent to Pion
+		// 	rtpPacket, readErr := remoteTrack.ReadRTP()
+		// 	if readErr != nil {
+		// 		panic(readErr)
+		// 	}
+
+		// 	for _, roomUser := range r.GetUsers() {
+		// 		// dont send rtp packets to owner
+		// 		if roomUser.ID == user.ID {
+		// 			continue
+		// 		}
+		// 		newRtpPacket := &rtp.Packet{
+		// 			Header:  rtpPacket.Header,
+		// 			Payload: rtpPacket.Payload,
+		// 			Raw:     rtpPacket.Raw,
+		// 		}
+		// 		// copy(rtpPacket.Payload, newRtpPacket.Payload)
+		// 		// copy(rtpPacket.Raw, newRtpPacket.Raw)
+		// 		// newRtpPacket.SSRC = 1
+		// 		// newRtpPacket.
+
+		// 		// var newRtpPacket rtp.Packet
+		// 		// copy()
+		// 		// Replace the SSRC with the SSRC of the outbound track.
+		// 		// The only change we are making replacing the SSRC, the RTP packets are unchanged otherwise
+		// 		rtpPacket.SSRC = roomUser.Track.SSRC()
+		// 		if writeErr := roomUser.Track.WriteRTP(newRtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
+		// 			// panic(writeErr)
+		// 			fmt.Println("error writing rtp packet", writeErr)
+		// 		}
+		// 	}
+		// }
 	})
 
 	// Set the handler for ICE connection state
@@ -156,7 +290,9 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 			fmt.Println("user joined")
 			// room.MembersCount++
 			fmt.Println("now members count is", len(room.GetUsers()))
-		} else if connectionState == webrtc.ICEConnectionStateDisconnected {
+		} else if connectionState == webrtc.ICEConnectionStateDisconnected ||
+			connectionState == webrtc.ICEConnectionStateFailed ||
+			connectionState == webrtc.ICEConnectionStateClosed {
 			fmt.Println("user leaved")
 			delete(r.Users, user.ID)
 			fmt.Println("now members count is", len(room.GetUsers()))
@@ -216,7 +352,8 @@ func main() {
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		// port = "8080"
+		port = "80"
 		log.Printf("Defaulting to port %s", port)
 	}
 	addr := fmt.Sprintf(":%s", port)

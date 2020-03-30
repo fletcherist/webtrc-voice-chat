@@ -46,9 +46,13 @@ Logs<br />
         pc.localDescription
       );
 
+      // const apiUrl = "http://localhost:8080";
+      // const apiUrl = "https://capture-graph.appspot.com";
+      const apiUrl = "http://84.201.146.20:8080";
+
       try {
         console.log("sending offer request...");
-        const res = await fetch("http://localhost:8080/offer", {
+        const res = await fetch(`${apiUrl}/offer`, {
           method: "POST",
           body: JSON.stringify(pc.localDescription)
         });
