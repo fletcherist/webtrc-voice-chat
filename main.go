@@ -26,9 +26,8 @@ var peerConnectionConfig = webrtc.Configuration{
 
 // User is a member of chat room
 type User struct {
-	ID             int64
-	Track          *webrtc.Track
-	PeerConnection *webrtc.PeerConnection
+	ID    int64
+	Track *webrtc.Track
 }
 
 // Room is a voice chat room
@@ -80,6 +79,7 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 	if err != nil {
 		return nil, err
 	}
+	peerConnection.GetConfiguration()
 
 	// Create Track that we audio back to client on
 	userTrack, err := peerConnection.NewTrack(payloadType, rand.Uint32(), "audio", "pion")
@@ -103,61 +103,6 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 		Track: userTrack,
 	}
 	r.Users[user.ID] = &user
-
-	// receivers := peerConnection.GetReceivers()
-	// receivers[0].
-
-	// senders := peerConnection.GetSenders()
-	// senders[0].Track().WriteSample()
-
-	// go func() {
-	// 	// file, _ := os.Open("test.wav")
-	// 	// reader := wav.NewReader(file)
-
-	// 	// defer file.Close()
-
-	// 	// for {
-	// 	// 	samples, err := reader.ReadSamples()
-	// 	// 	reader.Read()
-	// 	// 	if err == io.EOF {
-	// 	// 		break
-	// 	// 	}
-
-	// 	// 	for _, sample := range samples {
-	// 	// 		// fmt.Printf("L/R: %d/%d\n", reader.IntValue(sample, 0), reader.IntValue(sample, 1))
-	// 	// 		err := user.Track.WriteSample(media.Sample{Data: sample.Values, Samples: sampleRate / 8 * 2})
-	// 	// 		// _, err := user.Track.Write(sample)
-	// 	// 		if err != nil {
-	// 	// 			panic(err)
-	// 	// 		}
-	// 	// 	}
-	// 	// }
-
-	// 	for {
-	// 		var sample []byte = make([]byte, 32/8)
-	// 		_, err = rand.Read(sample)
-	// 		if err != nil {
-	// 			panic(err)
-	// 		}
-	// 		// 48000 times in a second need to write to buffer
-	// 		// so need to sleep
-
-	// 		// if need write 10 times in second it would be time.Millisecond / 5
-
-	// 		// fmt.Println("sample", sample)
-
-	// 		time.Sleep(time.Millisecond * 1)
-
-	// 		// send white noise to the channel
-
-	// 		err := user.Track.WriteSample(media.Sample{Data: sample, Samples: 1})
-	// 		// _, err := user.Track.Write(sample)
-	// 		if err != nil {
-	// 			panic(err)
-	// 		}
-	// 		// time.Sleep(time.Second)
-	// 	}
-	// }()
 
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
@@ -227,17 +172,17 @@ func (r *Room) AddUser(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 			}
 
 			users := r.GetUsers()
-			usersCSRC := []uint32{}
-			for _, user := range users {
-				usersCSRC = append(usersCSRC, user.Track.SSRC())
-			}
+			// usersCSRC := []uint32{}
+			// for _, user := range users {
+			// 	usersCSRC = append(usersCSRC, user.Track.SSRC())
+			// }
 			for _, roomUser := range users {
 				// dont send rtp packets to owner
 				if roomUser.ID == user.ID {
 					continue
 				}
-				rtpPacket.CSRC = usersCSRC
-				fmt.Println("remoteTrack.SSRC", remoteTrack.SSRC(), "rtpPacket.CSRC", rtpPacket.CSRC)
+				// rtpPacket.CSRC = usersCSRC
+				// fmt.Println("remoteTrack.SSRC", remoteTrack.SSRC(), "rtpPacket.CSRC", rtpPacket.CSRC)
 				// write empty rtp packet
 				// roomUser.Track.WriteSample(media.Sample{Data: []byte{}, Samples: 0})
 				if writeErr := roomUser.Track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
@@ -350,6 +295,13 @@ func main() {
 		w.Write(bytes)
 		return
 	}
+
+	hub := newHub()
+	go hub.run()
+
+	handleWs := func(w http.ResponseWriter, r *http.Request) {
+		serveWs(hub, w, r)
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		// port = "8080"
@@ -360,5 +312,6 @@ func main() {
 	fmt.Printf("listening on %s\n", addr)
 	http.HandleFunc("/", handlePing)
 	http.HandleFunc("/offer", handleOffer)
+	http.HandleFunc("/ws", handleWs)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
