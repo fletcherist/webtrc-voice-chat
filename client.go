@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -128,6 +130,24 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
 	client.hub.register <- client
+
+	go func() {
+		time.Sleep(time.Second * 5)
+
+		someJSON := struct {
+			Foo string `json:"foo"`
+			Bar string `json:"bar"`
+		}{
+			Foo: "12321311",
+			Bar: "213912982174",
+		}
+		jsonStr, err := json.Marshal(someJSON)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		client.send <- jsonStr
+	}()
 
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines.
