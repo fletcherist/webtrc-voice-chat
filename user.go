@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -23,7 +24,7 @@ const (
 	// Send pings to peer with this period. Must be less than pongWait.
 	pingPeriod = (pongWait * 9) / 10
 	// Maximum message size allowed from peer.
-	maxMessageSize = 512
+	maxMessageSize = 5120
 )
 
 var (
@@ -59,17 +60,21 @@ func (u *User) readPump() {
 	for {
 		_, message, err := u.conn.ReadMessage()
 		if err != nil {
+			fmt.Println(err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
+				fmt.Println(err)
 			}
 			break
 		}
 		message = bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
-		err = u.HandleEvent(message)
-		if err != nil {
-			fmt.Println(err)
-			u.SendErr(err)
-		}
+		go func() {
+			err := u.HandleEvent(message)
+			if err != nil {
+				fmt.Println(err)
+				u.SendErr(err)
+			}
+		}()
 	}
 }
 
@@ -77,9 +82,9 @@ func (u *User) readPump() {
 type Event struct {
 	Type string `json:"type"`
 
-	Offer  *webrtc.SessionDescription `json:"offer"`
-	Answer *webrtc.SessionDescription `json:"answer"`
-	Desc   string                     `json:"desc"`
+	Offer  *webrtc.SessionDescription `json:"offer,omitempty"`
+	Answer *webrtc.SessionDescription `json:"answer,omitempty"`
+	Desc   string                     `json:"desc,omitempty"`
 }
 
 // SendJSON sends json body to web socket
@@ -105,26 +110,17 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		return err
 	}
 
+	fmt.Println("handle event", event.Type)
+
 	if event.Type == "offer" && event.Offer != nil {
 		err := u.HandleOffer(*event.Offer)
 		if err != nil {
 			return err
 		}
-
-		err = u.SendJSON(struct {
-			Ping string `json:"ping"`
-		}{
-			Ping: "pong",
-		})
-
-		if err != nil {
-			return err
-		}
-
 		return nil
 	}
 
-	return nil
+	return u.SendErr(fmt.Errorf("not implemented"))
 }
 
 // HandleOffer handles webrtc offer
@@ -292,7 +288,13 @@ func (u *User) writePump() {
 }
 
 // serveWs handles websocket requests from the peer.
-func serveWs(room *Room, w http.ResponseWriter, r *http.Request) {
+func serveWs(w http.ResponseWriter, r *http.Request) {
+	room := newRoom()
+	go room.run()
+
+	roomID := strings.ReplaceAll(r.URL.Path, "/", "")
+	fmt.Println("ws connection to room:", roomID)
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)

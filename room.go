@@ -1,5 +1,7 @@
 package main
 
+import "errors"
+
 // Room maintains the set of active clients and broadcasts messages to the
 // clients.
 type Room struct {
@@ -31,10 +33,12 @@ func (r *Room) GetUsers() []*User {
 	return users
 }
 
+// Join connects user and room
 func (r *Room) Join(user *User) {
 	r.join <- user
 }
 
+// Leave disconnects user and room
 func (r *Room) Leave(user *User) {
 	r.leave <- user
 }
@@ -60,4 +64,31 @@ func (r *Room) run() {
 			}
 		}
 	}
+}
+
+// Rooms is a set of rooms
+type Rooms struct {
+	rooms map[string]*Room
+}
+
+// Get room by room id
+func (r *Rooms) Get(ID string) *Room {
+	return r.rooms[ID]
+}
+
+// AddRoom adds room to rooms list
+func (r *Rooms) AddRoom(roomID string, room *Room) error {
+	if _, exists := r.rooms[roomID]; exists {
+		return errors.New("room with id " + roomID + " already exists")
+	}
+	return nil
+}
+
+// RemoveRoom remove room from rooms list
+func (r *Rooms) RemoveRoom(roomID string) error {
+	if _, exists := r.rooms[roomID]; exists {
+		delete(r.rooms, roomID)
+		return nil
+	}
+	return nil
 }

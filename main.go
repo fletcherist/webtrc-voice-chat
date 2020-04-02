@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 
@@ -22,9 +21,9 @@ var peerConnectionConfig = webrtc.Configuration{
 
 func main() {
 
-	handlePing := func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, "pong")
-	}
+	// handlePing := func(w http.ResponseWriter, r *http.Request) {
+	// 	io.WriteString(w, "pong")
+	// }
 	// handleOffer := func(w http.ResponseWriter, r *http.Request) {
 	// fmt.Println("server: icoming offer request")
 	// w.Header().Add("Access-Control-Allow-Headers", "*")
@@ -58,11 +57,8 @@ func main() {
 	// return
 	// }
 
-	room := newRoom()
-	go room.run()
-
 	handleWs := func(w http.ResponseWriter, r *http.Request) {
-		serveWs(room, w, r)
+		serveWs(w, r)
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -72,8 +68,8 @@ func main() {
 	}
 	addr := fmt.Sprintf(":%s", port)
 	fmt.Printf("listening on %s\n", addr)
-	http.HandleFunc("/", handlePing)
+	// http.HandleFunc("/", handlePing)
 	// http.HandleFunc("/offer", handleOffer)
-	http.HandleFunc("/ws", handleWs)
+	http.HandleFunc("/", handleWs)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
