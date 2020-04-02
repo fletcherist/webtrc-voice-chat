@@ -57,8 +57,9 @@ func main() {
 	// return
 	// }
 
+	rooms := RoomsNew()
 	handleWs := func(w http.ResponseWriter, r *http.Request) {
-		serveWs(w, r)
+		serveWs(rooms, w, r)
 	}
 	port := os.Getenv("PORT")
 	if port == "" {

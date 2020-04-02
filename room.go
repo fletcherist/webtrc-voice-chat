@@ -15,7 +15,8 @@ type Room struct {
 	leave chan *User
 }
 
-func newRoom() *Room {
+// RoomNew creates new room
+func RoomNew() *Room {
 	return &Room{
 		broadcast: make(chan []byte),
 		join:      make(chan *User),
@@ -71,9 +72,26 @@ type Rooms struct {
 	rooms map[string]*Room
 }
 
+var errNotFound = errors.New("not found")
+
 // Get room by room id
-func (r *Rooms) Get(ID string) *Room {
-	return r.rooms[ID]
+func (r *Rooms) Get(roomID string) (*Room, error) {
+	if room, exists := r.rooms[roomID]; exists {
+		return room, nil
+	}
+
+	return nil, errNotFound
+}
+
+// GetOrCreate creates room if it does not exist
+func (r *Rooms) GetOrCreate(roomID string) *Room {
+	room, err := r.Get(roomID)
+	if err == errNotFound {
+		newRoom := RoomNew()
+		go newRoom.run()
+		return newRoom
+	}
+	return room
 }
 
 // AddRoom adds room to rooms list
@@ -91,4 +109,9 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 		return nil
 	}
 	return nil
+}
+
+// RoomsNew creates rooms instance
+func RoomsNew() *Rooms {
+	return &Rooms{}
 }

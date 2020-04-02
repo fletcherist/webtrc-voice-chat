@@ -288,11 +288,10 @@ func (u *User) writePump() {
 }
 
 // serveWs handles websocket requests from the peer.
-func serveWs(w http.ResponseWriter, r *http.Request) {
-	room := newRoom()
-	go room.run()
-
+func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	roomID := strings.ReplaceAll(r.URL.Path, "/", "")
+	room := rooms.GetOrCreate(roomID)
+
 	fmt.Println("ws connection to room:", roomID)
 
 	conn, err := upgrader.Upgrade(w, r, nil)
