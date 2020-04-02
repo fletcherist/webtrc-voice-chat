@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -24,7 +24,7 @@ const (
 	// Send pings to peer with this period. Must be less than pongWait.
 	pingPeriod = (pongWait * 9) / 10
 	// Maximum message size allowed from peer.
-	maxMessageSize = 5120
+	maxMessageSize = 51200
 )
 
 var (
@@ -42,10 +42,11 @@ var upgrader = websocket.Upgrader{
 
 // User is a middleman between the websocket connection and the hub.
 type User struct {
-	room  *Room
-	conn  *websocket.Conn // The websocket connection.
-	send  chan []byte     // Buffered channel of outbound messages.
-	Track *webrtc.Track   // WebRTC audio track
+	room           *Room
+	conn           *websocket.Conn        // The websocket connection.
+	send           chan []byte            // Buffered channel of outbound messages.
+	Track          *webrtc.Track          // WebRTC audio track
+	PeerConnection *webrtc.PeerConnection // WebRTC Peer Connection
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -118,9 +119,18 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 			return err
 		}
 		return nil
+	} else if event.Type == "answer" && event.Answer != nil {
+		if u.PeerConnection == nil {
+			return errors.New("user has no peer connection")
+		}
+		u.PeerConnection.SetRemoteDescription(*event.Answer)
 	}
 
 	return u.SendErr(fmt.Errorf("not implemented"))
+}
+
+func (u *User) SendOffer() error {
+	return errors.New("not implemented")
 }
 
 // HandleOffer handles webrtc offer
@@ -149,18 +159,19 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 	if err != nil {
 		return err
 	}
-	peerConnection.GetConfiguration()
 
-	// Create Track that we audio back to client on
-	userTrack, err := peerConnection.NewTrack(payloadType, rand.Uint32(), "audio", "pion")
-	if err != nil {
-		return err
-	}
+	u.PeerConnection = peerConnection
 
-	// Add this newly created track to the PeerConnection
-	if _, err = peerConnection.AddTrack(userTrack); err != nil {
-		return err
-	}
+	// // Create Track that we audio back to client on
+	// userTrack, err := peerConnection.NewTrack(payloadType, rand.Uint32(), "audio", "pion")
+	// if err != nil {
+	// 	return err
+	// }
+
+	// // Add this newly created track to the PeerConnection
+	// if _, err = peerConnection.AddTrack(userTrack); err != nil {
+	// 	return err
+	// }
 
 	// Set the remote SessionDescription
 	err = peerConnection.SetRemoteDescription(offer)
@@ -168,7 +179,7 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		return err
 	}
 
-	u.Track = userTrack
+	// u.Track = userTrack
 
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
@@ -187,24 +198,61 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		}()
 
 		fmt.Printf("Track has started, of type %d: %s \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name)
-		for {
-			// Read RTP packets being sent to Pion
-			rtpPacket, readErr := remoteTrack.ReadRTP()
-			if readErr != nil {
-				panic(readErr)
+
+		go func() error {
+			time.Sleep(time.Second * 5)
+			fmt.Println("123 Add remote track as peerConnection local track")
+			track, err := peerConnection.NewTrack(payloadType, rand.Uint32(), "audio", "pion")
+			if err != nil {
+				panic(err)
+			}
+			// peerConnection.OnICECandidate()
+			if _, err = peerConnection.AddTrack(track); err != nil {
+				fmt.Println("ERROR Add remote track as peerConnection local track", err)
+				panic(err)
 			}
 
-			for _, roomUser := range u.room.GetUsers() {
-				// dont send rtp packets to owner
-				if roomUser == u {
-					continue
-				}
-				if writeErr := roomUser.Track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
-					// panic(writeErr)
-					fmt.Println("error writing rtp packet", writeErr)
-				}
+			offer, err := peerConnection.CreateOffer(nil)
+			if err != nil {
+				panic(err)
 			}
-		}
+			err = peerConnection.SetLocalDescription(offer)
+			if err != nil {
+				panic(err)
+			}
+
+			err = u.SendJSON(Event{
+				Type:  "offer",
+				Offer: &offer,
+			})
+
+			return nil
+		}()
+
+		// for {
+		// 	// Read RTP packets being sent to Pion
+		// 	rtpPacket, readErr := remoteTrack.ReadRTP()
+		// 	if readErr != nil {
+		// 		panic(readErr)
+		// 	}
+
+		// 	for _, roomUser := range u.room.GetUsers() {
+		// 		// dont send rtp packets to owner
+		// 		// if roomUser == u {
+		// 		// 	continue
+		// 		// }
+
+		// 		// websocket user may joined, but no webrtc connection is established
+		// 		// so track could be nil
+		// 		if roomUser.Track == nil {
+		// 			continue
+		// 		}
+		// 		if writeErr := roomUser.Track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
+		// 			// panic(writeErr)
+		// 			fmt.Println("error writing rtp packet", writeErr)
+		// 		}
+		// 	}
+		// }
 	})
 
 	// Set the handler for ICE connection state
@@ -238,6 +286,37 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		Type:   "answer",
 		Answer: &answer,
 	})
+
+	go func() error {
+		time.Sleep(time.Second * 5)
+		fmt.Println("Add remote track as peerConnection local track")
+		track, err := peerConnection.NewTrack(payloadType, rand.Uint32(), "audio", "pion")
+		if err != nil {
+			panic(err)
+		}
+		// peerConnection.OnICECandidate()
+		if _, err = peerConnection.AddTrack(track); err != nil {
+			fmt.Println("ERROR Add remote track as peerConnection local track", err)
+			panic(err)
+		}
+
+		offer, err := peerConnection.CreateOffer(nil)
+		if err != nil {
+			panic(err)
+		}
+		err = peerConnection.SetLocalDescription(offer)
+		if err != nil {
+			panic(err)
+		}
+
+		err = u.SendJSON(Event{
+			Type:  "offer",
+			Offer: &offer,
+		})
+
+		return nil
+	}()
+
 	return nil
 }
 
@@ -289,16 +368,17 @@ func (u *User) writePump() {
 
 // serveWs handles websocket requests from the peer.
 func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
-	roomID := strings.ReplaceAll(r.URL.Path, "/", "")
-	room := rooms.GetOrCreate(roomID)
-
-	fmt.Println("ws connection to room:", roomID)
-
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+
+	roomID := strings.ReplaceAll(r.URL.Path, "/", "")
+	room := rooms.GetOrCreate(roomID)
+
+	fmt.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
+
 	user := &User{room: room, conn: conn, send: make(chan []byte, 256)}
 	user.room.Join(user)
 

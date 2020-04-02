@@ -58,6 +58,7 @@ func main() {
 	// }
 
 	rooms := RoomsNew()
+	go rooms.Watch()
 	handleWs := func(w http.ResponseWriter, r *http.Request) {
 		serveWs(rooms, w, r)
 	}

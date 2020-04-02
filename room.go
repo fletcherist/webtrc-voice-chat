@@ -1,6 +1,10 @@
 package main
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 // Room maintains the set of active clients and broadcasts messages to the
 // clients.
@@ -30,6 +34,18 @@ func (r *Room) GetUsers() []*User {
 	users := []*User{}
 	for user := range r.users {
 		users = append(users, user)
+	}
+	return users
+}
+
+// GetOtherUsers returns other users of room except current
+func (r *Room) GetOtherUsers(user *User) []*User {
+	users := []*User{}
+	for userCandidate := range r.users {
+		if user == userCandidate {
+			continue
+		}
+		users = append(users, userCandidate)
 	}
 	return users
 }
@@ -79,19 +95,20 @@ func (r *Rooms) Get(roomID string) (*Room, error) {
 	if room, exists := r.rooms[roomID]; exists {
 		return room, nil
 	}
-
 	return nil, errNotFound
 }
 
 // GetOrCreate creates room if it does not exist
 func (r *Rooms) GetOrCreate(roomID string) *Room {
 	room, err := r.Get(roomID)
-	if err == errNotFound {
-		newRoom := RoomNew()
-		go newRoom.run()
-		return newRoom
+	if err == nil {
+		return room
 	}
-	return room
+	newRoom := RoomNew()
+	r.AddRoom(roomID, newRoom)
+	go newRoom.run()
+	return newRoom
+
 }
 
 // AddRoom adds room to rooms list
@@ -99,6 +116,7 @@ func (r *Rooms) AddRoom(roomID string, room *Room) error {
 	if _, exists := r.rooms[roomID]; exists {
 		return errors.New("room with id " + roomID + " already exists")
 	}
+	r.rooms[roomID] = room
 	return nil
 }
 
@@ -111,7 +129,17 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 	return nil
 }
 
+// Watch for debug
+func (r *Rooms) Watch() {
+	ticker := time.NewTicker(time.Second * 5)
+	for range ticker.C {
+		fmt.Println("rooms watcher:", r.rooms)
+	}
+}
+
 // RoomsNew creates rooms instance
 func RoomsNew() *Rooms {
-	return &Rooms{}
+	return &Rooms{
+		rooms: make(map[string]*Room, 100),
+	}
 }
