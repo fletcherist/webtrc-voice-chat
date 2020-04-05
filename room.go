@@ -4,18 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/pion/webrtc/v2"
 )
 
 // Room maintains the set of active clients and broadcasts messages to the
 // clients.
 type Room struct {
-	users      map[*User]bool           // Registered clients.
-	broadcast  chan []byte              // Inbound messages from the clients.
-	join       chan *User               // Register requests from the clients.
-	leave      chan *User               // Unregister requests from clients.
-	TracksPool map[string]*webrtc.Track // Set of user tracks
+	users     map[*User]bool // Registered clients.
+	broadcast chan []byte    // Inbound messages from the clients.
+	join      chan *User     // Register requests from the clients.
+	leave     chan *User     // Unregister requests from clients.
 }
 
 // RoomNew creates new room

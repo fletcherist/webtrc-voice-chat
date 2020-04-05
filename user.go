@@ -44,10 +44,10 @@ var upgrader = websocket.Upgrader{
 // User is a middleman between the websocket connection and the hub.
 type User struct {
 	room           *Room
-	conn           *websocket.Conn        // The websocket connection.
-	send           chan []byte            // Buffered channel of outbound messages.
-	Track          *webrtc.Track          // WebRTC audio track
-	PeerConnection *webrtc.PeerConnection // WebRTC Peer Connection
+	conn           *websocket.Conn          // The websocket connection.
+	send           chan []byte              // Buffered channel of outbound messages.
+	PeerConnection *webrtc.PeerConnection   // WebRTC Peer Connection
+	Tracks         map[uint32]*webrtc.Track // WebRTC incoming audio tracks
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -77,6 +77,52 @@ func (u *User) readPump() {
 				u.SendErr(err)
 			}
 		}()
+	}
+}
+
+// writePump pumps messages from the hub to the websocket connection.
+//
+// A goroutine running writePump is started for each connection. The
+// application ensures that there is at most one writer to a connection by
+// executing all writes from this goroutine.
+func (u *User) writePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		u.conn.Close()
+	}()
+	for {
+		select {
+		case message, ok := <-u.send:
+			u.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// The hub closed the channel.
+				u.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := u.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+
+			// Add queued messages to the current websocket message.
+			n := len(u.send)
+			for i := 0; i < n; i++ {
+				w.Write(newline)
+				w.Write(<-u.send)
+			}
+
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			u.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := u.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -130,17 +176,39 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 	return u.SendErr(fmt.Errorf("not implemented"))
 }
 
+// GetRoomTracks returns list of room incoming tracks
+func (u *User) GetRoomTracks() []*webrtc.Track {
+	tracks := []*webrtc.Track{}
+	for _, user := range u.room.GetUsers() {
+		for _, track := range user.Tracks {
+			tracks = append(tracks, track)
+		}
+	}
+	return tracks
+}
+
 // SendOffer to the user when he/she connects
 func (u *User) SendOffer() error {
 	// fmt.Println("123 Add remote track as peerConnection local track")
-	track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
-	if err != nil {
-		panic(err)
+
+	// if len(u.Tracks) == 0 {
+	// 	track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	if _, err = u.PeerConnection.AddTrack(track); err != nil {
+	// 		fmt.Println("ERROR Add remote track as peerConnection local track", err)
+	// 		panic(err)
+	// 	}
+	// }
+
+	for _, track := range u.GetRoomTracks() {
+		if _, err := u.PeerConnection.AddTrack(track); err != nil {
+			fmt.Println("ERROR Add remote track as peerConnection local track", err)
+			panic(err)
+		}
 	}
-	if _, err = u.PeerConnection.AddTrack(track); err != nil {
-		fmt.Println("ERROR Add remote track as peerConnection local track", err)
-		panic(err)
-	}
+
 	offer, err := u.PeerConnection.CreateOffer(nil)
 	if err != nil {
 		panic(err)
@@ -175,6 +243,15 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		return fmt.Errorf("remote peer does not support opus codec")
 	}
 
+	track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
+	if err != nil {
+		panic(err)
+	}
+	if _, err = u.PeerConnection.AddTrack(track); err != nil {
+		fmt.Println("ERROR Add remote track as peerConnection local track", err)
+		panic(err)
+	}
+
 	// Set the remote SessionDescription
 	if err := u.PeerConnection.SetRemoteDescription(offer); err != nil {
 		return err
@@ -194,52 +271,6 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		return err
 	}
 	return nil
-}
-
-// writePump pumps messages from the hub to the websocket connection.
-//
-// A goroutine running writePump is started for each connection. The
-// application ensures that there is at most one writer to a connection by
-// executing all writes from this goroutine.
-func (u *User) writePump() {
-	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		ticker.Stop()
-		u.conn.Close()
-	}()
-	for {
-		select {
-		case message, ok := <-u.send:
-			u.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				// The hub closed the channel.
-				u.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			w, err := u.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(message)
-
-			// Add queued messages to the current websocket message.
-			n := len(u.send)
-			for i := 0; i < n; i++ {
-				w.Write(newline)
-				w.Write(<-u.send)
-			}
-
-			if err := w.Close(); err != nil {
-				return
-			}
-		case <-ticker.C:
-			u.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := u.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
-		}
-	}
 }
 
 // AddTrack adds track dynamically with renegotiation
@@ -288,6 +319,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		conn:           conn,
 		send:           make(chan []byte, 256),
 		PeerConnection: peerConnection,
+		Tracks:         make(map[uint32]*webrtc.Track, 2),
 	}
 
 	user.PeerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
@@ -323,58 +355,33 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 			panic(err)
 		}
 
-		for _, roomUser := range room.GetUsers() {
+		user.Tracks[track.SSRC()] = track
+		for _, roomUser := range room.GetOtherUsers(user) {
 			if err := roomUser.AddTrack(track); err != nil {
 				panic(err)
 			}
 		}
 
 		fmt.Printf("Track has started, of type %d: %s \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name)
-
 		for {
 			// Read RTP packets being sent to Pion
 			rtpPacket, readErr := remoteTrack.ReadRTP()
 			if readErr != nil {
 				panic(readErr)
 			}
-
-			// rtpPacket.SSRC = track.SSRC()
 			if writeErr := track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
-				// panic(writeErr)
 				fmt.Println("error writing rtp packet", writeErr)
+				panic(writeErr)
 			}
 		}
-		// for {
-		// 	// Read RTP packets being sent to Pion
-		// 	rtpPacket, readErr := remoteTrack.ReadRTP()
-		// 	if readErr != nil {
-		// 		panic(readErr)
-		// 	}
-
-		// 	for _, roomUser := range user.room.GetUsers() {
-		// 		// dont send rtp packets to owner
-		// 		// if roomUser == u {
-		// 		// 	continue
-		// 		// }
-
-		// 		// websocket user may joined, but no webrtc connection is established
-		// 		// so track could be nil
-		// 		if roomUser.Track == nil {
-		// 			continue
-		// 		}
-		// 		if writeErr := roomUser.Track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
-		// 			// panic(writeErr)
-		// 			fmt.Println("error writing rtp packet", writeErr)
-		// 		}
-		// 	}
-		// }
 	})
 
 	user.room.Join(user)
-	user.SendOffer()
 
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines.
 	go user.writePump()
 	go user.readPump()
+
+	// user.SendOffer()
 }
