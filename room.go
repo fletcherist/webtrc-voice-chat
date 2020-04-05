@@ -56,6 +56,11 @@ func (r *Room) Leave(user *User) {
 	r.leave <- user
 }
 
+// GetUsersCount return users count in the room
+func (r *Room) GetUsersCount() int {
+	return len(r.GetUsers())
+}
+
 func (r *Room) run() {
 	for {
 		select {

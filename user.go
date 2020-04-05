@@ -44,10 +44,11 @@ var upgrader = websocket.Upgrader{
 // User is a middleman between the websocket connection and the hub.
 type User struct {
 	room           *Room
-	conn           *websocket.Conn          // The websocket connection.
-	send           chan []byte              // Buffered channel of outbound messages.
-	PeerConnection *webrtc.PeerConnection   // WebRTC Peer Connection
-	Tracks         map[uint32]*webrtc.Track // WebRTC incoming audio tracks
+	conn           *websocket.Conn        // The websocket connection.
+	send           chan []byte            // Buffered channel of outbound messages.
+	PeerConnection *webrtc.PeerConnection // WebRTC Peer Connection
+	// Tracks         map[uint32]*webrtc.Track // WebRTC incoming audio tracks
+	Track *webrtc.Track
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -180,8 +181,11 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 func (u *User) GetRoomTracks() []*webrtc.Track {
 	tracks := []*webrtc.Track{}
 	for _, user := range u.room.GetUsers() {
-		for _, track := range user.Tracks {
-			tracks = append(tracks, track)
+		// for _, track := range user.Tracks {
+		// 	tracks = append(tracks, track)
+		// }
+		if user.Track != nil {
+			tracks = append(tracks, user.Track)
 		}
 	}
 	return tracks
@@ -243,13 +247,22 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		return fmt.Errorf("remote peer does not support opus codec")
 	}
 
-	track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
-	if err != nil {
-		panic(err)
+	tracks := u.GetRoomTracks()
+	if len(tracks) == 0 {
+		track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
+		if err != nil {
+			panic(err)
+		}
+		if _, err = u.PeerConnection.AddTrack(track); err != nil {
+			fmt.Println("ERROR Add remote track as peerConnection local track", err)
+			panic(err)
+		}
 	}
-	if _, err = u.PeerConnection.AddTrack(track); err != nil {
-		fmt.Println("ERROR Add remote track as peerConnection local track", err)
-		panic(err)
+	for _, track := range u.GetRoomTracks() {
+		if _, err := u.PeerConnection.AddTrack(track); err != nil {
+			fmt.Println("ERROR Add remote track as peerConnection local track", err)
+			panic(err)
+		}
 	}
 
 	// Set the remote SessionDescription
@@ -319,7 +332,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		conn:           conn,
 		send:           make(chan []byte, 256),
 		PeerConnection: peerConnection,
-		Tracks:         make(map[uint32]*webrtc.Track, 2),
+		// Tracks:         make(map[uint32]*webrtc.Track, 2),
 	}
 
 	user.PeerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
@@ -355,7 +368,8 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 			panic(err)
 		}
 
-		user.Tracks[track.SSRC()] = track
+		// user.Tracks[track.SSRC()] = track
+		user.Track = track
 		for _, roomUser := range room.GetOtherUsers(user) {
 			if err := roomUser.AddTrack(track); err != nil {
 				panic(err)
