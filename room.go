@@ -2,8 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
-	"time"
 )
 
 // Room maintains the set of active clients and broadcasts messages to the
@@ -38,7 +36,7 @@ func (r *Room) GetUsers() []*User {
 func (r *Room) GetOtherUsers(user *User) []*User {
 	users := []*User{}
 	for userCandidate := range r.users {
-		if user == userCandidate {
+		if user.ID == userCandidate.ID {
 			continue
 		}
 		users = append(users, userCandidate)
@@ -130,13 +128,13 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 	return nil
 }
 
-// Watch for debug
-func (r *Rooms) Watch() {
-	ticker := time.NewTicker(time.Second * 5)
-	for range ticker.C {
-		fmt.Println("rooms watcher:", r.rooms)
-	}
-}
+// // Watch for debug
+// func (r *Rooms) Watch() {
+// 	ticker := time.NewTicker(time.Second * 5)
+// 	for range ticker.C {
+// 		fmt.Println("rooms watcher:", r.rooms)
+// 	}
+// }
 
 // RoomsNew creates rooms instance
 func RoomsNew() *Rooms {

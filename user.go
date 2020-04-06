@@ -7,14 +7,29 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v2"
+)
+
+var (
+	// only support unified plan
+	cfg = webrtc.Configuration{
+		SDPSemantics: webrtc.SDPSemanticsUnifiedPlanWithFallback,
+	}
+
+	setting webrtc.SettingEngine
+
+	errChanClosed     = errors.New("channel closed")
+	errInvalidTrack   = errors.New("track is nil")
+	errInvalidPacket  = errors.New("packet is nil")
+	errInvalidPC      = errors.New("pc is nil")
+	errInvalidOptions = errors.New("invalid options")
 )
 
 const (
@@ -43,17 +58,27 @@ var upgrader = websocket.Upgrader{
 
 // User is a middleman between the websocket connection and the hub.
 type User struct {
-	room           *Room
-	conn           *websocket.Conn        // The websocket connection.
-	send           chan []byte            // Buffered channel of outbound messages.
-	PeerConnection *webrtc.PeerConnection // WebRTC Peer Connection
+	ID   int
+	room *Room
+	conn *websocket.Conn        // The websocket connection.
+	send chan []byte            // Buffered channel of outbound messages.
+	pc   *webrtc.PeerConnection // WebRTC Peer Connection
 	// Tracks         map[uint32]*webrtc.Track // WebRTC incoming audio tracks
-	Track *webrtc.Track
+	// Track *webrtc.Track
+	inTracks      map[uint32]*webrtc.Track
+	inTracksLock  sync.RWMutex
+	outTracks     map[uint32]*webrtc.Track
+	outTracksLock sync.RWMutex
+
+	rtpCh chan *rtp.Packet
+
+	stop bool
 }
 
 // readPump pumps messages from the websocket connection to the hub.
 func (u *User) readPump() {
 	defer func() {
+		u.stop = true
 		u.room.Leave(u)
 		u.conn.Close()
 	}()
@@ -63,10 +88,10 @@ func (u *User) readPump() {
 	for {
 		_, message, err := u.conn.ReadMessage()
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
-				fmt.Println(err)
+				log.Println(err)
 			}
 			break
 		}
@@ -74,7 +99,7 @@ func (u *User) readPump() {
 		go func() {
 			err := u.HandleEvent(message)
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
 				u.SendErr(err)
 			}
 		}()
@@ -159,7 +184,7 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		return err
 	}
 
-	fmt.Println("handle event", event.Type)
+	log.Println("handle event", event.Type)
 	if event.Type == "offer" && event.Offer != nil {
 		err := u.HandleOffer(*event.Offer)
 		if err != nil {
@@ -167,76 +192,33 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		}
 		return nil
 	} else if event.Type == "answer" && event.Answer != nil {
-		if u.PeerConnection == nil {
+		if u.pc == nil {
 			return errors.New("user has no peer connection")
 		}
-		u.PeerConnection.SetRemoteDescription(*event.Answer)
+		u.pc.SetRemoteDescription(*event.Answer)
 		return nil
 	}
 
-	return u.SendErr(fmt.Errorf("not implemented"))
+	return u.SendErr(errors.New("not implemented"))
 }
 
 // GetRoomTracks returns list of room incoming tracks
 func (u *User) GetRoomTracks() []*webrtc.Track {
 	tracks := []*webrtc.Track{}
 	for _, user := range u.room.GetUsers() {
-		// for _, track := range user.Tracks {
-		// 	tracks = append(tracks, track)
-		// }
-		if user.Track != nil {
-			tracks = append(tracks, user.Track)
+		for _, track := range user.GetInTracks() {
+			tracks = append(tracks, track)
 		}
 	}
 	return tracks
 }
 
-// SendOffer to the user when he/she connects
-func (u *User) SendOffer() error {
-	// fmt.Println("123 Add remote track as peerConnection local track")
-
-	// if len(u.Tracks) == 0 {
-	// 	track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-	// 	if _, err = u.PeerConnection.AddTrack(track); err != nil {
-	// 		fmt.Println("ERROR Add remote track as peerConnection local track", err)
-	// 		panic(err)
-	// 	}
-	// }
-
-	for _, track := range u.GetRoomTracks() {
-		if _, err := u.PeerConnection.AddTrack(track); err != nil {
-			fmt.Println("ERROR Add remote track as peerConnection local track", err)
-			panic(err)
-		}
-	}
-
-	offer, err := u.PeerConnection.CreateOffer(nil)
-	if err != nil {
-		panic(err)
-	}
-	if err = u.PeerConnection.SetLocalDescription(offer); err != nil {
-		panic(err)
-	}
-	if err = u.SendJSON(Event{
-		Type:  "offer",
-		Offer: &offer,
-	}); err != nil {
-		panic(err)
-	}
-	return nil
-}
-
-// HandleOffer handles webrtc offer
-func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
+func (u *User) supportOpus(offer webrtc.SessionDescription) bool {
 	mediaEngine := webrtc.MediaEngine{}
 	mediaEngine.PopulateFromSDP(offer)
-
+	var payloadType uint8
 	// Search for Payload type. If the offer doesn't support codec exit since
 	// since they won't be able to decode anything we send them
-	var payloadType uint8
 	for _, audioCodec := range mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio) {
 		if audioCodec.Name == "OPUS" {
 			payloadType = audioCodec.PayloadType
@@ -244,68 +226,219 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 		}
 	}
 	if payloadType == 0 {
-		return fmt.Errorf("remote peer does not support opus codec")
+		return false
 	}
+	return true
+}
 
+// HandleOffer handles webrtc offer
+func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
+	if ok := u.supportOpus(offer); !ok {
+		return errors.New("remote peer does not support opus codec")
+	}
 	tracks := u.GetRoomTracks()
 	if len(tracks) == 0 {
-		track, err := u.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
+		_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
 		if err != nil {
-			panic(err)
-		}
-		if _, err = u.PeerConnection.AddTrack(track); err != nil {
-			fmt.Println("ERROR Add remote track as peerConnection local track", err)
-			panic(err)
+			return err
 		}
 	}
-	for _, track := range u.GetRoomTracks() {
-		if _, err := u.PeerConnection.AddTrack(track); err != nil {
-			fmt.Println("ERROR Add remote track as peerConnection local track", err)
+
+	fmt.Println("attach ", len(tracks), "tracks to new user")
+	for _, track := range tracks {
+		err := u.AddTrack(track.SSRC())
+		if err != nil {
+			log.Println("ERROR Add remote track as peerConnection local track", err)
 			panic(err)
 		}
 	}
 
 	// Set the remote SessionDescription
-	if err := u.PeerConnection.SetRemoteDescription(offer); err != nil {
+	if err := u.pc.SetRemoteDescription(offer); err != nil {
 		return err
 	}
-	answer, err := u.PeerConnection.CreateAnswer(nil)
+	err := u.SendAnswer()
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+// Offer return a offer
+func (u *User) Offer() (webrtc.SessionDescription, error) {
+	offer, err := u.pc.CreateOffer(nil)
+	if err != nil {
+		return webrtc.SessionDescription{}, err
+	}
+	err = u.pc.SetLocalDescription(offer)
+	if err != nil {
+		return webrtc.SessionDescription{}, err
+	}
+	return offer, nil
+}
+
+// SendOffer creates webrtc offer
+func (u *User) SendOffer() error {
+	offer, err := u.Offer()
+	err = u.SendJSON(Event{Type: "offer", Offer: &offer})
+	if err != nil {
+		panic(err)
+	}
+	return nil
+}
+
+// Answer creates webrtc answer
+func (u *User) Answer() (webrtc.SessionDescription, error) {
+	answer, err := u.pc.CreateAnswer(nil)
+	if err != nil {
+		return webrtc.SessionDescription{}, err
+	}
 	// Sets the LocalDescription, and starts our UDP listeners
-	if err = u.PeerConnection.SetLocalDescription(answer); err != nil {
+	if err = u.pc.SetLocalDescription(answer); err != nil {
+		return webrtc.SessionDescription{}, err
+	}
+	return answer, nil
+}
+
+// SendAnswer creates answer and send it via websocket
+func (u *User) SendAnswer() error {
+	answer, err := u.Answer()
+	if err != nil {
 		return err
 	}
-	if err = u.SendJSON(Event{
-		Type:   "answer",
-		Answer: &answer,
-	}); err != nil {
+	err = u.SendJSON(Event{Type: "answer", Answer: &answer})
+	return nil
+}
+
+// receiveInTrackRTP receive all incoming tracks' rtp and sent to one channel
+func (u *User) receiveInTrackRTP(remoteTrack *webrtc.Track) {
+	for {
+		// if u.stop {
+		// 	return
+		// }
+		rtp, err := remoteTrack.ReadRTP()
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			log.Fatalf("rtp err => %v", err)
+		}
+		u.rtpCh <- rtp
+	}
+}
+
+// ReadRTP read rtp packet
+func (u *User) ReadRTP() (*rtp.Packet, error) {
+	rtp, ok := <-u.rtpCh
+	if !ok {
+		return nil, errChanClosed
+	}
+	return rtp, nil
+}
+
+// WriteRTP send rtp packet to user outgoing tracks
+func (u *User) WriteRTP(pkt *rtp.Packet) error {
+	if pkt == nil {
+		return errInvalidPacket
+	}
+	u.outTracksLock.RLock()
+	track := u.outTracks[pkt.SSRC]
+	u.outTracksLock.RUnlock()
+
+	if track == nil {
+		log.Printf("WebRTCTransport.WriteRTP track==nil pkt.SSRC=%d", pkt.SSRC)
+		return errInvalidTrack
+	}
+
+	// log.Debugf("WebRTCTransport.WriteRTP pkt=%v", pkt)
+	err := track.WriteRTP(pkt)
+	if err != nil {
+		// log.Errorf(err.Error())
+		// u.writeErrCnt++
 		return err
 	}
 	return nil
 }
 
-// AddTrack adds track dynamically with renegotiation
-func (u *User) AddTrack(track *webrtc.Track) error {
-	if _, err := u.PeerConnection.AddTrack(track); err != nil {
-		fmt.Println("ERROR Add remote track as peerConnection local track", err)
-		return err
+func (u *User) broadcastIncomingRTP() {
+	for {
+		rtp, err := u.ReadRTP()
+		if err != nil {
+			panic(err)
+		}
+		for _, user := range u.room.GetOtherUsers(u) {
+			err := user.WriteRTP(rtp)
+			if err != nil {
+				// panic(err)
+				fmt.Println(err)
+			}
+		}
 	}
-	offer, err := u.PeerConnection.CreateOffer(nil)
+}
+
+// GetInTracks return incoming tracks
+func (u *User) GetInTracks() map[uint32]*webrtc.Track {
+	u.inTracksLock.RLock()
+	defer u.inTracksLock.RUnlock()
+	return u.inTracks
+}
+
+// GetOutTracks return incoming tracks
+func (u *User) GetOutTracks() map[uint32]*webrtc.Track {
+	u.outTracksLock.RLock()
+	defer u.outTracksLock.RUnlock()
+	return u.outTracks
+}
+
+// AddTrack adds track dynamically with renegotiation
+func (u *User) AddTrack(ssrc uint32) error {
+	track, err := u.pc.NewTrack(webrtc.DefaultPayloadTypeOpus, ssrc, "pion", "pion")
 	if err != nil {
 		return err
 	}
-	if err = u.PeerConnection.SetLocalDescription(offer); err != nil {
+	if _, err := u.pc.AddTrack(track); err != nil {
+		log.Println("ERROR Add remote track as peerConnection local track", err)
 		return err
 	}
-	if err = u.SendJSON(Event{
-		Type:  "offer",
-		Offer: &offer,
-	}); err != nil {
-		return err
-	}
+
+	u.outTracksLock.Lock()
+	u.outTracks[track.SSRC()] = track
+	u.outTracksLock.Unlock()
 	return nil
+}
+
+// AddTrack add track to pc
+// func (w *WebRTCTransport) AddTrack(ssrc uint32, pt uint8, streamID string, trackID string) (*webrtc.Track, error) {
+// 	if w.pc == nil {
+// 		return nil, errInvalidPC
+// 	}
+// 	track, err := w.pc.NewTrack(pt, ssrc, trackID, streamID)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	if _, err = w.pc.AddTrack(track); err != nil {
+// 		return nil, err
+// 	}
+
+// 	w.outTrackLock.Lock()
+// 	w.outTracks[ssrc] = track
+// 	w.outTrackLock.Unlock()
+// 	return track, nil
+// }
+
+var count = 0
+
+// Watch for debug
+func (u *User) Watch() {
+	ticker := time.NewTicker(time.Second * 5)
+	for range ticker.C {
+		if u.stop {
+			ticker.Stop()
+			return
+		}
+		fmt.Println("ID:", u.ID, "in: ", " ", u.GetInTracks(), "out: ", u.GetOutTracks())
+	}
 }
 
 // serveWs handles websocket requests from the peer.
@@ -317,7 +450,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	}
 
 	mediaEngine := webrtc.MediaEngine{}
-	mediaEngine.RegisterDefaultCodecs()
+	mediaEngine.RegisterCodec(webrtc.NewRTPOpusCodec(webrtc.DefaultPayloadTypeOpus, 48000))
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
 	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
@@ -325,69 +458,54 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	roomID := strings.ReplaceAll(r.URL.Path, "/", "")
 	room := rooms.GetOrCreate(roomID)
 
-	fmt.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
+	log.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
 
+	count++
 	user := &User{
-		room:           room,
-		conn:           conn,
-		send:           make(chan []byte, 256),
-		PeerConnection: peerConnection,
+		ID:        count,
+		room:      room,
+		conn:      conn,
+		send:      make(chan []byte, 256),
+		pc:        peerConnection,
+		inTracks:  make(map[uint32]*webrtc.Track),
+		outTracks: make(map[uint32]*webrtc.Track),
+		rtpCh:     make(chan *rtp.Packet, 100),
 		// Tracks:         make(map[uint32]*webrtc.Track, 2),
 	}
 
-	user.PeerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("Connection State has changed %s \n", connectionState.String())
+	user.pc.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
+		log.Printf("Connection State has changed %s \n", connectionState.String())
 		if connectionState == webrtc.ICEConnectionStateConnected {
-			fmt.Println("user joined")
+			log.Println("user joined")
 			// room.MembersCount++
-			fmt.Println("now members count is", len(user.room.GetUsers()))
+			log.Println("now members count is", len(user.room.GetUsers()))
 		} else if connectionState == webrtc.ICEConnectionStateDisconnected ||
 			connectionState == webrtc.ICEConnectionStateFailed ||
 			connectionState == webrtc.ICEConnectionStateClosed {
-			fmt.Println("user leaved")
+			log.Println("user leaved")
 			// delete(r.Users, user.ID)
-			fmt.Println("now members count is", len(user.room.GetUsers()))
+			log.Println("now members count is", len(user.room.GetUsers()))
 		}
 	})
-	user.PeerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
-		fmt.Println("peerConnection.OnTrack")
-		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-		// This is a temporary fix until we implement incoming RTCP events, then we would push a PLI only when a viewer requests it
-		go func() {
-			ticker := time.NewTicker(time.Second * 3)
-			for range ticker.C {
-				errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: remoteTrack.SSRC()}})
-				if errSend != nil {
-					fmt.Println(errSend)
-				}
+
+	user.pc.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
+		log.Println("peerConnection.OnTrack")
+		user.inTracksLock.Lock()
+		user.inTracks[remoteTrack.SSRC()] = remoteTrack
+		user.inTracksLock.Unlock()
+
+		for _, roomUser := range user.room.GetOtherUsers(user) {
+			if err := roomUser.AddTrack(remoteTrack.SSRC()); err != nil {
+				panic(err)
 			}
-		}()
-
-		track, err := user.PeerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, remoteTrack.SSRC(), "audio", "pion")
-		if err != nil {
-			panic(err)
-		}
-
-		// user.Tracks[track.SSRC()] = track
-		user.Track = track
-		for _, roomUser := range room.GetOtherUsers(user) {
-			if err := roomUser.AddTrack(track); err != nil {
+			err := roomUser.SendOffer()
+			if err != nil {
 				panic(err)
 			}
 		}
-
-		fmt.Printf("Track has started, of type %d: %s \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name)
-		for {
-			// Read RTP packets being sent to Pion
-			rtpPacket, readErr := remoteTrack.ReadRTP()
-			if readErr != nil {
-				panic(readErr)
-			}
-			if writeErr := track.WriteRTP(rtpPacket); writeErr != nil && writeErr != io.ErrClosedPipe {
-				fmt.Println("error writing rtp packet", writeErr)
-				panic(writeErr)
-			}
-		}
+		log.Printf("Track has started, of type %d: %s, ssrc: %d \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name, remoteTrack.SSRC())
+		go user.receiveInTrackRTP(remoteTrack)
+		go user.broadcastIncomingRTP()
 	})
 
 	user.room.Join(user)
@@ -396,6 +514,5 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	// new goroutines.
 	go user.writePump()
 	go user.readPump()
-
-	// user.SendOffer()
+	go user.Watch()
 }
