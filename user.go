@@ -65,7 +65,8 @@ type User struct {
 	pc   *webrtc.PeerConnection // WebRTC Peer Connection
 	// Tracks         map[uint32]*webrtc.Track // WebRTC incoming audio tracks
 	// Track *webrtc.Track
-	inTracks      map[uint32]*webrtc.Track
+	// inTracks      map[uint32]*webrtc.Track
+	inTrack       *webrtc.Track
 	inTracksLock  sync.RWMutex
 	outTracks     map[uint32]*webrtc.Track
 	outTracksLock sync.RWMutex
@@ -132,14 +133,6 @@ func (u *User) writePump() {
 				return
 			}
 			w.Write(message)
-
-			// Add queued messages to the current websocket message.
-			n := len(u.send)
-			for i := 0; i < n; i++ {
-				w.Write(newline)
-				w.Write(<-u.send)
-			}
-
 			if err := w.Close(); err != nil {
 				return
 			}
@@ -156,9 +149,10 @@ func (u *User) writePump() {
 type Event struct {
 	Type string `json:"type"`
 
-	Offer  *webrtc.SessionDescription `json:"offer,omitempty"`
-	Answer *webrtc.SessionDescription `json:"answer,omitempty"`
-	Desc   string                     `json:"desc,omitempty"`
+	Offer     *webrtc.SessionDescription `json:"offer,omitempty"`
+	Answer    *webrtc.SessionDescription `json:"answer,omitempty"`
+	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
+	Desc      string                     `json:"desc,omitempty"`
 }
 
 // SendJSON sends json body to web socket
@@ -185,17 +179,27 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 	}
 
 	log.Println("handle event", event.Type)
-	if event.Type == "offer" && event.Offer != nil {
+	if event.Type == "offer" {
+		if event.Offer == nil {
+			return u.SendErr(errors.New("empty offer"))
+		}
 		err := u.HandleOffer(*event.Offer)
 		if err != nil {
 			return err
 		}
 		return nil
-	} else if event.Type == "answer" && event.Answer != nil {
-		if u.pc == nil {
-			return errors.New("user has no peer connection")
+	} else if event.Type == "answer" {
+		if event.Answer == nil {
+			return u.SendErr(errors.New("empty answer"))
 		}
 		u.pc.SetRemoteDescription(*event.Answer)
+		return nil
+	} else if event.Type == "candidate" {
+		if event.Candidate == nil {
+			return u.SendErr(errors.New("empty candidate"))
+		}
+		log.Println("adding candidate", event.Candidate)
+		u.pc.AddICECandidate(*event.Candidate)
 		return nil
 	}
 
@@ -206,8 +210,8 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 func (u *User) GetRoomTracks() []*webrtc.Track {
 	tracks := []*webrtc.Track{}
 	for _, user := range u.room.GetUsers() {
-		for _, track := range user.GetInTracks() {
-			tracks = append(tracks, track)
+		if user.inTrack != nil {
+			tracks = append(tracks, user.inTrack)
 		}
 	}
 	return tracks
@@ -243,7 +247,6 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 			return err
 		}
 	}
-
 	fmt.Println("attach ", len(tracks), "tracks to new user")
 	for _, track := range tracks {
 		err := u.AddTrack(track.SSRC())
@@ -284,6 +287,19 @@ func (u *User) SendOffer() error {
 	err = u.SendJSON(Event{Type: "offer", Offer: &offer})
 	if err != nil {
 		panic(err)
+	}
+	return nil
+}
+
+// SendCandidate sends ice candidate to peer
+func (u *User) SendCandidate(iceCandidate *webrtc.ICECandidate) error {
+	if iceCandidate == nil {
+		return errors.New("nil ice candidate")
+	}
+	iceCandidateInit := iceCandidate.ToJSON()
+	err := u.SendJSON(Event{Type: "candidate", Candidate: &iceCandidateInit})
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -377,13 +393,6 @@ func (u *User) broadcastIncomingRTP() {
 	}
 }
 
-// GetInTracks return incoming tracks
-func (u *User) GetInTracks() map[uint32]*webrtc.Track {
-	u.inTracksLock.RLock()
-	defer u.inTracksLock.RUnlock()
-	return u.inTracks
-}
-
 // GetOutTracks return incoming tracks
 func (u *User) GetOutTracks() map[uint32]*webrtc.Track {
 	u.outTracksLock.RLock()
@@ -437,7 +446,7 @@ func (u *User) Watch() {
 			ticker.Stop()
 			return
 		}
-		fmt.Println("ID:", u.ID, "in: ", " ", u.GetInTracks(), "out: ", u.GetOutTracks())
+		fmt.Println("ID:", u.ID, "out: ", u.GetOutTracks())
 	}
 }
 
@@ -467,11 +476,18 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		conn:      conn,
 		send:      make(chan []byte, 256),
 		pc:        peerConnection,
-		inTracks:  make(map[uint32]*webrtc.Track),
 		outTracks: make(map[uint32]*webrtc.Track),
 		rtpCh:     make(chan *rtp.Packet, 100),
-		// Tracks:         make(map[uint32]*webrtc.Track, 2),
 	}
+
+	user.pc.OnICECandidate(func(iceCandidate *webrtc.ICECandidate) {
+		if iceCandidate != nil {
+			err := user.SendCandidate(iceCandidate)
+			if err != nil {
+				log.Println("fail send candidate", err)
+			}
+		}
+	})
 
 	user.pc.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		log.Printf("Connection State has changed %s \n", connectionState.String())
@@ -489,10 +505,8 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	})
 
 	user.pc.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
-		log.Println("peerConnection.OnTrack")
-		user.inTracksLock.Lock()
-		user.inTracks[remoteTrack.SSRC()] = remoteTrack
-		user.inTracksLock.Unlock()
+		log.Println("user id: ", user.ID, "peerConnection.OnTrack")
+		user.inTrack = remoteTrack
 
 		for _, roomUser := range user.room.GetOtherUsers(user) {
 			if err := roomUser.AddTrack(remoteTrack.SSRC()); err != nil {
