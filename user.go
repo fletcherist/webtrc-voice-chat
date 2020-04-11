@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -72,17 +73,26 @@ type User struct {
 	rtpCh chan *rtp.Packet
 
 	stop bool
+
+	info UserInfo
+}
+
+// UserInfo contains some user data
+type UserInfo struct {
+	Emoji string `json:"emoji"` // emoji-face like on clients (for test)
 }
 
 // UserWrap represents user object sent to client
 type UserWrap struct {
 	ID string `json:"id"`
+	UserInfo
 }
 
 // Wrap wraps user
 func (u *User) Wrap() *UserWrap {
 	return &UserWrap{
-		ID: u.ID,
+		ID:       u.ID,
+		UserInfo: u.info,
 	}
 }
 
@@ -174,6 +184,11 @@ func (u *User) SendEvent(event Event) error {
 	}
 	u.send <- json
 	return nil
+}
+
+// SendEventUser sends user to client to identify himself
+func (u *User) SendEventUser() error {
+	return u.SendEvent(Event{Type: "user", User: u.Wrap()})
 }
 
 // BroadcastEvent sends json body to everyone in the room except this user
@@ -516,6 +531,8 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 
 	log.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
 
+	emojis := []string{"😎", "🧐", "🤡", "👻", "😷", "🤗", "😏", "👽", "👨‍🚀"}
+
 	user := &User{
 		ID:        strconv.FormatInt(time.Now().UnixNano(), 10), // generate random id based on timestamp
 		room:      room,
@@ -525,6 +542,10 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		inTracks:  make(map[uint32]*webrtc.Track),
 		outTracks: make(map[uint32]*webrtc.Track),
 		rtpCh:     make(chan *rtp.Packet, 100),
+
+		info: UserInfo{
+			Emoji: emojis[rand.Intn(len(emojis))],
+		},
 	}
 
 	user.pc.OnICECandidate(func(iceCandidate *webrtc.ICECandidate) {
@@ -585,4 +606,6 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	go user.writePump()
 	go user.readPump()
 	go user.Watch()
+
+	user.SendEventUser()
 }
