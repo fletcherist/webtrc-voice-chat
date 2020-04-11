@@ -13,8 +13,8 @@ type Room struct {
 	leave     chan *User     // Unregister requests from clients.
 }
 
-// RoomNew creates new room
-func RoomNew() *Room {
+// NewRoom creates new room
+func NewRoom() *Room {
 	return &Room{
 		broadcast: make(chan []byte),
 		join:      make(chan *User),
@@ -103,7 +103,7 @@ func (r *Rooms) GetOrCreate(roomID string) *Room {
 	if err == nil {
 		return room
 	}
-	newRoom := RoomNew()
+	newRoom := NewRoom()
 	r.AddRoom(roomID, newRoom)
 	go newRoom.run()
 	return newRoom
@@ -136,8 +136,8 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 // 	}
 // }
 
-// RoomsNew creates rooms instance
-func RoomsNew() *Rooms {
+// NewRooms creates rooms instance
+func NewRooms() *Rooms {
 	return &Rooms{
 		rooms: make(map[string]*Room, 100),
 	}

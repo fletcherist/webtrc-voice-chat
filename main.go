@@ -57,7 +57,7 @@ func main() {
 	// return
 	// }
 
-	rooms := RoomsNew()
+	rooms := NewRooms()
 	// go rooms.Watch()
 	handleWs := func(w http.ResponseWriter, r *http.Request) {
 		serveWs(rooms, w, r)
