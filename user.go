@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -516,7 +517,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	log.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
 
 	user := &User{
-		ID:        string(time.Now().Unix()), // generate random id based on timestamp
+		ID:        strconv.FormatInt(time.Now().UnixNano(), 10), // generate random id based on timestamp
 		room:      room,
 		conn:      conn,
 		send:      make(chan []byte, 256),
