@@ -65,8 +65,7 @@ type User struct {
 	pc   *webrtc.PeerConnection // WebRTC Peer Connection
 	// Tracks         map[uint32]*webrtc.Track // WebRTC incoming audio tracks
 	// Track *webrtc.Track
-	// inTracks      map[uint32]*webrtc.Track
-	inTrack       *webrtc.Track
+	inTracks      map[uint32]*webrtc.Track
 	inTracksLock  sync.RWMutex
 	outTracks     map[uint32]*webrtc.Track
 	outTracksLock sync.RWMutex
@@ -170,6 +169,13 @@ func (u *User) SendErr(err error) error {
 	return u.SendJSON(Event{Type: "error", Desc: fmt.Sprint(err)})
 }
 
+func (u *User) log(msg ...interface{}) {
+	log.Println(
+		fmt.Sprintf("user %d:", u.ID),
+		fmt.Sprint(msg...),
+	)
+}
+
 // HandleEvent handles user event
 func (u *User) HandleEvent(eventRaw []byte) error {
 	var event *Event
@@ -178,7 +184,7 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		return err
 	}
 
-	log.Println("handle event", event.Type)
+	u.log("handle event", event.Type)
 	if event.Type == "offer" {
 		if event.Offer == nil {
 			return u.SendErr(errors.New("empty offer"))
@@ -198,20 +204,51 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		if event.Candidate == nil {
 			return u.SendErr(errors.New("empty candidate"))
 		}
-		log.Println("adding candidate", event.Candidate)
+		u.log("adding candidate")
 		u.pc.AddICECandidate(*event.Candidate)
+		return nil
+	} else if event.Type == "request_offer" {
+		u.log("request_offer")
+		u.SendInitialOffer()
 		return nil
 	}
 
 	return u.SendErr(errors.New("not implemented"))
 }
 
+// SendInitialOffer adds a all tracks in the room and creates an offer
+func (u *User) SendInitialOffer() error {
+	// add receive only transciever to get user microphone audio
+	_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
+	if err != nil {
+		return err
+	}
+
+	tracks := u.GetRoomTracks()
+	fmt.Println("attach ", len(tracks), "tracks to new user")
+	u.log("new user add tracks", len(tracks))
+	for _, track := range tracks {
+		err := u.AddTrack(track.SSRC())
+		if err != nil {
+			log.Println("ERROR Add remote track as peerConnection local track", err)
+			panic(err)
+		}
+	}
+
+	err = u.SendOffer()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // GetRoomTracks returns list of room incoming tracks
 func (u *User) GetRoomTracks() []*webrtc.Track {
 	tracks := []*webrtc.Track{}
 	for _, user := range u.room.GetUsers() {
-		if user.inTrack != nil {
-			tracks = append(tracks, user.inTrack)
+		for _, track := range user.inTracks {
+			tracks = append(tracks, track)
 		}
 	}
 	return tracks
@@ -240,26 +277,55 @@ func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 	if ok := u.supportOpus(offer); !ok {
 		return errors.New("remote peer does not support opus codec")
 	}
-	tracks := u.GetRoomTracks()
-	if len(tracks) == 0 {
-		_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
-		if err != nil {
-			return err
-		}
-	}
-	fmt.Println("attach ", len(tracks), "tracks to new user")
-	for _, track := range tracks {
-		err := u.AddTrack(track.SSRC())
-		if err != nil {
-			log.Println("ERROR Add remote track as peerConnection local track", err)
-			panic(err)
-		}
-	}
+
+	// _, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
+	// if err != nil {
+	// 	return err
+	// }
+	// tracks := u.GetRoomTracks()
+	// if len(tracks) == 0 {
+	// 	_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+	// fmt.Println("attach ", len(tracks), "tracks to new user")
+	// u.log("new user add tracks", len(tracks))
+	// for _, track := range tracks {
+	// 	err := u.AddTrack(track.SSRC())
+	// 	if err != nil {
+	// 		log.Println("ERROR Add remote track as peerConnection local track", err)
+	// 		panic(err)
+	// 	}
+	// }
+
+	// i := 1
+	// for {
+	// 	// err := u.AddTrack(uint32(i))
+	// 	_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv})
+	// 	if err != nil {
+	// 		fmt.Println(err)
+	// 		return err
+	// 	}
+	// 	if err != nil {
+	// 		u.log(err)
+	// 	}
+	// 	i++
+	// 	if i == 3 {
+	// 		break
+	// 	}
+	// }
+
+	// _, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
+	// if err != nil {
+	// 	return err
+	// }
 
 	// Set the remote SessionDescription
 	if err := u.pc.SetRemoteDescription(offer); err != nil {
 		return err
 	}
+
 	err := u.SendAnswer()
 	if err != nil {
 		return err
@@ -330,9 +396,9 @@ func (u *User) SendAnswer() error {
 // receiveInTrackRTP receive all incoming tracks' rtp and sent to one channel
 func (u *User) receiveInTrackRTP(remoteTrack *webrtc.Track) {
 	for {
-		// if u.stop {
-		// 	return
-		// }
+		if u.stop {
+			return
+		}
 		rtp, err := remoteTrack.ReadRTP()
 		if err != nil {
 			if err == io.EOF {
@@ -393,7 +459,15 @@ func (u *User) broadcastIncomingRTP() {
 	}
 }
 
-// GetOutTracks return incoming tracks
+// GetInTracks return incoming tracks
+func (u *User) GetInTracks() map[uint32]*webrtc.Track {
+	u.inTracksLock.RLock()
+	defer u.inTracksLock.RUnlock()
+	return u.inTracks
+
+}
+
+// GetOutTracks return outgoing tracks
 func (u *User) GetOutTracks() map[uint32]*webrtc.Track {
 	u.outTracksLock.RLock()
 	defer u.outTracksLock.RUnlock()
@@ -402,7 +476,15 @@ func (u *User) GetOutTracks() map[uint32]*webrtc.Track {
 
 // AddTrack adds track dynamically with renegotiation
 func (u *User) AddTrack(ssrc uint32) error {
-	track, err := u.pc.NewTrack(webrtc.DefaultPayloadTypeOpus, ssrc, "pion", "pion")
+	u.outTracksLock.Lock()
+	if _, alreadExist := u.outTracks[ssrc]; alreadExist {
+		return errors.New("track already added")
+	}
+	u.outTracksLock.Unlock()
+
+	u.pc.GetSenders()
+
+	track, err := u.pc.NewTrack(webrtc.DefaultPayloadTypeOpus, ssrc, string(ssrc), string(ssrc))
 	if err != nil {
 		return err
 	}
@@ -476,6 +558,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		conn:      conn,
 		send:      make(chan []byte, 256),
 		pc:        peerConnection,
+		inTracks:  make(map[uint32]*webrtc.Track),
 		outTracks: make(map[uint32]*webrtc.Track),
 		rtpCh:     make(chan *rtp.Packet, 100),
 	}
@@ -504,20 +587,51 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
+	// go func() error {
+	// 	time.Sleep(time.Second * 5)
+	// 	log.Println("TRANSCEIVER add remote track (user: ", user.ID, ")")
+	// 	if err := user.AddTrack(1); err != nil {
+	// 		log.Println(err)
+	// 		panic(err)
+	// 	}
+	// 	if err := user.AddTrack(2); err != nil {
+	// 		log.Println(err)
+	// 		panic(err)
+	// 	}
+	// 	if err := user.AddTrack(3); err != nil {
+	// 		log.Println(err)
+	// 		panic(err)
+	// 	}
+	// 	err := user.SendOffer()
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	return nil
+	// }()
+
 	user.pc.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
-		log.Println("user id: ", user.ID, "peerConnection.OnTrack")
-		user.inTrack = remoteTrack
+		user.log(
+			"peerConnection.OnTrack",
+			fmt.Sprintf("track has started, of type %d: %s, ssrc: %d \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name, remoteTrack.SSRC()),
+		)
+		if _, alreadyAdded := user.inTracks[remoteTrack.SSRC()]; alreadyAdded {
+			user.log("user.inTrack != nil", "already handled")
+			return
+		}
+
+		user.inTracks[remoteTrack.SSRC()] = remoteTrack
 
 		for _, roomUser := range user.room.GetOtherUsers(user) {
+			log.Println("add remote track (user: ", user.ID, ") ", "track to user ", roomUser.ID)
 			if err := roomUser.AddTrack(remoteTrack.SSRC()); err != nil {
-				panic(err)
+				log.Println(err)
+				continue
 			}
 			err := roomUser.SendOffer()
 			if err != nil {
 				panic(err)
 			}
 		}
-		log.Printf("Track has started, of type %d: %s, ssrc: %d \n", remoteTrack.PayloadType(), remoteTrack.Codec().Name, remoteTrack.SSRC())
 		go user.receiveInTrackRTP(remoteTrack)
 		go user.broadcastIncomingRTP()
 	})
