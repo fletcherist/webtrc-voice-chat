@@ -58,7 +58,7 @@ var upgrader = websocket.Upgrader{
 
 // User is a middleman between the websocket connection and the hub.
 type User struct {
-	ID            int
+	ID            int64
 	room          *Room
 	conn          *websocket.Conn          // The websocket connection.
 	send          chan []byte              // Buffered channel of outbound messages.
@@ -152,9 +152,9 @@ type Event struct {
 	Desc      string                     `json:"desc,omitempty"`
 }
 
-// SendJSON sends json body to web socket
-func (u *User) SendJSON(body interface{}) error {
-	json, err := json.Marshal(body)
+// SendEvent sends json body to web socket
+func (u *User) SendEvent(event Event) error {
+	json, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
@@ -162,9 +162,19 @@ func (u *User) SendJSON(body interface{}) error {
 	return nil
 }
 
+// BroadcastEvent sends json body to everyone in the room except this user
+func (u *User) BroadcastEvent(event Event) error {
+	json, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	u.room.Broadcast(json, u)
+	return nil
+}
+
 // SendErr sends error in json format to web socket
 func (u *User) SendErr(err error) error {
-	return u.SendJSON(Event{Type: "error", Desc: fmt.Sprint(err)})
+	return u.SendEvent(Event{Type: "error", Desc: fmt.Sprint(err)})
 }
 
 func (u *User) log(msg ...interface{}) {
@@ -305,7 +315,7 @@ func (u *User) Offer() (webrtc.SessionDescription, error) {
 // SendOffer creates webrtc offer
 func (u *User) SendOffer() error {
 	offer, err := u.Offer()
-	err = u.SendJSON(Event{Type: "offer", Offer: &offer})
+	err = u.SendEvent(Event{Type: "offer", Offer: &offer})
 	if err != nil {
 		panic(err)
 	}
@@ -318,7 +328,7 @@ func (u *User) SendCandidate(iceCandidate *webrtc.ICECandidate) error {
 		return errors.New("nil ice candidate")
 	}
 	iceCandidateInit := iceCandidate.ToJSON()
-	err := u.SendJSON(Event{Type: "candidate", Candidate: &iceCandidateInit})
+	err := u.SendEvent(Event{Type: "candidate", Candidate: &iceCandidateInit})
 	if err != nil {
 		return err
 	}
@@ -344,7 +354,7 @@ func (u *User) SendAnswer() error {
 	if err != nil {
 		return err
 	}
-	err = u.SendJSON(Event{Type: "answer", Answer: &answer})
+	err = u.SendEvent(Event{Type: "answer", Answer: &answer})
 	return nil
 }
 
@@ -451,8 +461,6 @@ func (u *User) AddTrack(ssrc uint32) error {
 	return nil
 }
 
-var count = 0
-
 // Watch for debug
 func (u *User) Watch() {
 	ticker := time.NewTicker(time.Second * 5)
@@ -484,9 +492,8 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 
 	log.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
 
-	count++
 	user := &User{
-		ID:        count,
+		ID:        time.Now().Unix(), // generate random id based on timestamp
 		room:      room,
 		conn:      conn,
 		send:      make(chan []byte, 256),

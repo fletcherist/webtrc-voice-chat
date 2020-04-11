@@ -4,19 +4,24 @@ import (
 	"errors"
 )
 
+type broadcastMsg struct {
+	data []byte
+	user *User // message will be broadcasted to everyone, except this user
+}
+
 // Room maintains the set of active clients and broadcasts messages to the
 // clients.
 type Room struct {
 	users     map[*User]bool // Registered clients.
-	broadcast chan []byte    // Inbound messages from the clients.
-	join      chan *User     // Register requests from the clients.
-	leave     chan *User     // Unregister requests from clients.
+	broadcast chan broadcastMsg
+	join      chan *User // Register requests from the clients.
+	leave     chan *User // Unregister requests from clients.
 }
 
 // NewRoom creates new room
 func NewRoom() *Room {
 	return &Room{
-		broadcast: make(chan []byte),
+		broadcast: make(chan broadcastMsg),
 		join:      make(chan *User),
 		leave:     make(chan *User),
 		users:     make(map[*User]bool),
@@ -54,6 +59,12 @@ func (r *Room) Leave(user *User) {
 	r.leave <- user
 }
 
+// Broadcast sends message to everyone except user (if passed)
+func (r *Room) Broadcast(data []byte, user *User) {
+	message := broadcastMsg{data: data, user: user}
+	r.broadcast <- message
+}
+
 // GetUsersCount return users count in the room
 func (r *Room) GetUsersCount() int {
 	return len(r.GetUsers())
@@ -64,15 +75,21 @@ func (r *Room) run() {
 		select {
 		case user := <-r.join:
 			r.users[user] = true
+			user.BroadcastEvent(Event{Type: "user_join"})
 		case user := <-r.leave:
 			if _, ok := r.users[user]; ok {
 				delete(r.users, user)
 				close(user.send)
 			}
+			user.BroadcastEvent(Event{Type: "user_leave"})
 		case message := <-r.broadcast:
 			for user := range r.users {
+				// message will be broadcasted to everyone, except this user
+				if message.user != nil && user.ID == message.user.ID {
+					continue
+				}
 				select {
-				case user.send <- message:
+				case user.send <- message.data:
 				default:
 					close(user.send)
 					delete(r.users, user)
@@ -127,14 +144,6 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 	}
 	return nil
 }
-
-// // Watch for debug
-// func (r *Rooms) Watch() {
-// 	ticker := time.NewTicker(time.Second * 5)
-// 	for range ticker.C {
-// 		fmt.Println("rooms watcher:", r.rooms)
-// 	}
-// }
 
 // NewRooms creates rooms instance
 func NewRooms() *Rooms {
