@@ -58,7 +58,7 @@ var upgrader = websocket.Upgrader{
 
 // User is a middleman between the websocket connection and the hub.
 type User struct {
-	ID            int64
+	ID            string
 	room          *Room
 	conn          *websocket.Conn          // The websocket connection.
 	send          chan []byte              // Buffered channel of outbound messages.
@@ -71,6 +71,18 @@ type User struct {
 	rtpCh chan *rtp.Packet
 
 	stop bool
+}
+
+// UserWrap represents user object sent to client
+type UserWrap struct {
+	ID string `json:"id"`
+}
+
+// Wrap wraps user
+func (u *User) Wrap() *UserWrap {
+	return &UserWrap{
+		ID: u.ID,
+	}
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -149,6 +161,7 @@ type Event struct {
 	Offer     *webrtc.SessionDescription `json:"offer,omitempty"`
 	Answer    *webrtc.SessionDescription `json:"answer,omitempty"`
 	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
+	User      *UserWrap                  `json:"user,omitempty"`
 	Desc      string                     `json:"desc,omitempty"`
 }
 
@@ -172,6 +185,16 @@ func (u *User) BroadcastEvent(event Event) error {
 	return nil
 }
 
+// BroadcastEventJoin sends user_join event
+func (u *User) BroadcastEventJoin() error {
+	return u.BroadcastEvent(Event{Type: "user_join", User: u.Wrap()})
+}
+
+// BroadcastEventLeave sends user_leave event
+func (u *User) BroadcastEventLeave() error {
+	return u.BroadcastEvent(Event{Type: "user_join", User: u.Wrap()})
+}
+
 // SendErr sends error in json format to web socket
 func (u *User) SendErr(err error) error {
 	return u.SendEvent(Event{Type: "error", Desc: fmt.Sprint(err)})
@@ -179,7 +202,7 @@ func (u *User) SendErr(err error) error {
 
 func (u *User) log(msg ...interface{}) {
 	log.Println(
-		fmt.Sprintf("user %d:", u.ID),
+		fmt.Sprintf("user %s:", u.ID),
 		fmt.Sprint(msg...),
 	)
 }
@@ -493,7 +516,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	log.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
 
 	user := &User{
-		ID:        time.Now().Unix(), // generate random id based on timestamp
+		ID:        string(time.Now().Unix()), // generate random id based on timestamp
 		room:      room,
 		conn:      conn,
 		send:      make(chan []byte, 256),

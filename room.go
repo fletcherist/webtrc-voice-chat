@@ -75,13 +75,13 @@ func (r *Room) run() {
 		select {
 		case user := <-r.join:
 			r.users[user] = true
-			user.BroadcastEvent(Event{Type: "user_join"})
+			user.BroadcastEventJoin()
 		case user := <-r.leave:
 			if _, ok := r.users[user]; ok {
 				delete(r.users, user)
 				close(user.send)
 			}
-			user.BroadcastEvent(Event{Type: "user_leave"})
+			user.BroadcastEventLeave()
 		case message := <-r.broadcast:
 			for user := range r.users {
 				// message will be broadcasted to everyone, except this user
