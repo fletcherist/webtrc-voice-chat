@@ -214,7 +214,7 @@ func (u *User) BroadcastEventJoin() error {
 
 // BroadcastEventLeave sends user_leave event
 func (u *User) BroadcastEventLeave() error {
-	return u.BroadcastEvent(Event{Type: "user_join", User: u.Wrap()})
+	return u.BroadcastEvent(Event{Type: "user_leave", User: u.Wrap()})
 }
 
 // SendErr sends error in json format to web socket
