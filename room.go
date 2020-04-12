@@ -12,10 +12,15 @@ type broadcastMsg struct {
 // Room maintains the set of active clients and broadcasts messages to the
 // clients.
 type Room struct {
-	users     map[*User]bool // Registered clients.
+	users     map[string]*User
 	broadcast chan broadcastMsg
 	join      chan *User // Register requests from the clients.
 	leave     chan *User // Unregister requests from clients.
+}
+
+// RoomWrap is a public representation of a room
+type RoomWrap struct {
+	Users []*UserWrap `json:"users"`
 }
 
 // NewRoom creates new room
@@ -24,14 +29,14 @@ func NewRoom() *Room {
 		broadcast: make(chan broadcastMsg),
 		join:      make(chan *User),
 		leave:     make(chan *User),
-		users:     make(map[*User]bool),
+		users:     make(map[string]*User),
 	}
 }
 
 // GetUsers converts map[int64]*User to list
 func (r *Room) GetUsers() []*User {
 	users := []*User{}
-	for user := range r.users {
+	for _, user := range r.users {
 		users = append(users, user)
 	}
 	return users
@@ -40,7 +45,7 @@ func (r *Room) GetUsers() []*User {
 // GetOtherUsers returns other users of room except current
 func (r *Room) GetOtherUsers(user *User) []*User {
 	users := []*User{}
-	for userCandidate := range r.users {
+	for _, userCandidate := range r.users {
 		if user.ID == userCandidate.ID {
 			continue
 		}
@@ -74,16 +79,16 @@ func (r *Room) run() {
 	for {
 		select {
 		case user := <-r.join:
-			r.users[user] = true
+			r.users[user.ID] = user
 			go user.BroadcastEventJoin()
 		case user := <-r.leave:
-			if _, ok := r.users[user]; ok {
-				delete(r.users, user)
+			if _, ok := r.users[user.ID]; ok {
+				delete(r.users, user.ID)
 				close(user.send)
 			}
 			go user.BroadcastEventLeave()
 		case message := <-r.broadcast:
-			for user := range r.users {
+			for _, user := range r.users {
 				// message will be broadcasted to everyone, except this user
 				if message.user != nil && user.ID == message.user.ID {
 					continue
@@ -92,7 +97,7 @@ func (r *Room) run() {
 				case user.send <- message.data:
 				default:
 					close(user.send)
-					delete(r.users, user)
+					delete(r.users, user.ID)
 				}
 			}
 		}
