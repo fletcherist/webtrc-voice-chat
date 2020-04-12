@@ -24,9 +24,15 @@ type RoomWrap struct {
 }
 
 // Wrap returns public version of room
-func (r *Room) Wrap() *RoomWrap {
+func (r *Room) Wrap(me *User) *RoomWrap {
 	usersWrap := []*UserWrap{}
 	for _, user := range r.GetUsers() {
+		if me != nil {
+			// do not add current user to room
+			if me.ID == user.ID {
+				continue
+			}
+		}
 		usersWrap = append(usersWrap, user.Wrap())
 	}
 

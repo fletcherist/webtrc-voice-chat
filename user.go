@@ -173,6 +173,7 @@ type Event struct {
 	Answer    *webrtc.SessionDescription `json:"answer,omitempty"`
 	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
 	User      *UserWrap                  `json:"user,omitempty"`
+	Room      *RoomWrap                  `json:"room,omitempty"`
 	Desc      string                     `json:"desc,omitempty"`
 }
 
@@ -189,6 +190,11 @@ func (u *User) SendEvent(event Event) error {
 // SendEventUser sends user to client to identify himself
 func (u *User) SendEventUser() error {
 	return u.SendEvent(Event{Type: "user", User: u.Wrap()})
+}
+
+// SendEventRoom sends room to client with users except me
+func (u *User) SendEventRoom() error {
+	return u.SendEvent(Event{Type: "room", Room: u.room.Wrap(u)})
 }
 
 // BroadcastEvent sends json body to everyone in the room except this user
@@ -608,4 +614,5 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 	go user.Watch()
 
 	user.SendEventUser()
+	user.SendEventRoom()
 }

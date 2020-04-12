@@ -36,7 +36,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		bytes, err := json.Marshal(room.Wrap())
+		bytes, err := json.Marshal(room.Wrap(nil))
 		if err != nil {
 			http.Error(w, fmt.Sprint(err), 500)
 		}
