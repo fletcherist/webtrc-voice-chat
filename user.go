@@ -137,6 +137,8 @@ func (u *User) writePump() {
 	defer func() {
 		ticker.Stop()
 		u.conn.Close()
+		u.stop = true
+		u.pc.Close()
 	}()
 	for {
 		select {
@@ -147,7 +149,6 @@ func (u *User) writePump() {
 				u.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-
 			w, err := u.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				return
