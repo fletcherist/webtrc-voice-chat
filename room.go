@@ -23,6 +23,18 @@ type RoomWrap struct {
 	Users []*UserWrap `json:"users"`
 }
 
+// Wrap returns public version of room
+func (r *Room) Wrap() *RoomWrap {
+	usersWrap := []*UserWrap{}
+	for _, user := range r.GetUsers() {
+		usersWrap = append(usersWrap, user.Wrap())
+	}
+
+	return &RoomWrap{
+		Users: usersWrap,
+	}
+}
+
 // NewRoom creates new room
 func NewRoom() *Room {
 	return &Room{

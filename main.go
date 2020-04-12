@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/pion/webrtc/v2"
 
 	"net/http"
@@ -20,58 +23,45 @@ var peerConnectionConfig = webrtc.Configuration{
 }
 
 func main() {
-
-	// handlePing := func(w http.ResponseWriter, r *http.Request) {
-	// 	io.WriteString(w, "pong")
-	// }
-	// handleOffer := func(w http.ResponseWriter, r *http.Request) {
-	// fmt.Println("server: icoming offer request")
-	// w.Header().Add("Access-Control-Allow-Headers", "*")
-	// w.Header().Add("Access-Control-Allow-Origin", "*")
-	// if r.Method != "POST" {
-	// 	http.NotFound(w, r)
-	// 	return
-	// }
-	// // buf := make([]byte, )
-	// var offer webrtc.SessionDescription
-	// err := json.NewDecoder(r.Body).Decode(&offer)
-	// if err != nil {
-	// 	http.Error(w, "invalid offer format", 400)
-	// 	return
-	// }
-
-	// answer, err := room.AddUser(offer)
-	// if err != nil {
-	// 	http.Error(w, fmt.Sprint("cant accept offer:", err), http.StatusBadRequest)
-	// 	return
-	// }
-	// // json.Marshal(obj)
-	// // io.Write(w, `{"ok": true}`)
-	// bytes, err := json.Marshal(answer)
-	// if err != nil {
-	// 	http.Error(w, "server error", http.StatusInternalServerError)
-	// 	return
-	// }
-	// w.WriteHeader(200)
-	// w.Write(bytes)
-	// return
-	// }
-
 	rooms := NewRooms()
-	// go rooms.Watch()
-	handleWs := func(w http.ResponseWriter, r *http.Request) {
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/rooms/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Access-Control-Allow-Headers", "*")
+		w.Header().Add("Access-Control-Allow-Origin", "*")
+		vars := mux.Vars(r)
+		roomID := vars["id"]
+		room, err := rooms.Get(roomID)
+		if err == errNotFound {
+			http.NotFound(w, r)
+			return
+		}
+		bytes, err := json.Marshal(room.Wrap())
+		if err != nil {
+			http.Error(w, fmt.Sprint(err), 500)
+		}
+		w.Write(bytes)
+	}).Methods("GET")
+
+	router.HandleFunc("/{id}", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(rooms, w, r)
-	}
+	})
+
+	// go rooms.Watch()
 	port := os.Getenv("PORT")
 	if port == "" {
-		// port = "8080"
 		port = "80"
 		log.Printf("Defaulting to port %s", port)
 	}
 	addr := fmt.Sprintf(":%s", port)
 	fmt.Printf("listening on %s\n", addr)
-	// http.HandleFunc("/", handlePing)
-	// http.HandleFunc("/offer", handleOffer)
-	http.HandleFunc("/", handleWs)
-	log.Fatal(http.ListenAndServe(addr, nil))
+
+	srv := &http.Server{
+		Handler:      router,
+		Addr:         addr,
+		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  15 * time.Second,
+	}
+
+	log.Fatal(srv.ListenAndServe())
 }
