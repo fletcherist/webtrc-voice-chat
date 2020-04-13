@@ -138,7 +138,7 @@ func (u *User) writePump() {
 		ticker.Stop()
 		u.conn.Close()
 		u.stop = true
-		u.pc.Close()
+		// u.pc.Close()
 	}()
 	for {
 		select {
@@ -538,7 +538,10 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 
 	log.Println("ws connection to room:", roomID, len(room.GetUsers()), "users")
 
-	emojis := []string{"😎", "🧐", "🤡", "👻", "😷", "🤗", "😏", "👽", "👨‍🚀"}
+	emojis := []string{
+		"😎", "🧐", "🤡", "👻", "😷", "🤗", "😏",
+		"👽", "👨‍🚀", "🐺", "🐯", "🦁", "🐶", "🧐",
+	}
 
 	user := &User{
 		ID:        strconv.FormatInt(time.Now().UnixNano(), 10), // generate random id based on timestamp
