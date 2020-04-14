@@ -168,6 +168,23 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 	return nil
 }
 
+// RoomsStats is an app global statistics
+type RoomsStats struct {
+	Users int `json:"users"`
+	Rooms int `json:"rooms"`
+}
+
+// GetStats get app statistics
+func (r *Rooms) GetStats() RoomsStats {
+	stats := RoomsStats{
+		Rooms: len(r.rooms),
+	}
+	for _, room := range r.rooms {
+		stats.Users += room.GetUsersCount()
+	}
+	return stats
+}
+
 // NewRooms creates rooms instance
 func NewRooms() *Rooms {
 	return &Rooms{

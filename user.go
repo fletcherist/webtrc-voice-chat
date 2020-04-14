@@ -27,11 +27,12 @@ var (
 
 	setting webrtc.SettingEngine
 
-	errChanClosed     = errors.New("channel closed")
-	errInvalidTrack   = errors.New("track is nil")
-	errInvalidPacket  = errors.New("packet is nil")
-	errInvalidPC      = errors.New("pc is nil")
-	errInvalidOptions = errors.New("invalid options")
+	errChanClosed    = errors.New("channel closed")
+	errInvalidTrack  = errors.New("track is nil")
+	errInvalidPacket = errors.New("packet is nil")
+	// errInvalidPC      = errors.New("pc is nil")
+	// errInvalidOptions = errors.New("invalid options")
+	errNotImplemented = errors.New("not implemented")
 )
 
 const (
@@ -218,6 +219,16 @@ func (u *User) BroadcastEventLeave() error {
 	return u.BroadcastEvent(Event{Type: "user_leave", User: u.Wrap()})
 }
 
+// BroadcastEventMute sends microphone mute event to everyone
+func (u *User) BroadcastEventMute() error {
+	return u.BroadcastEvent(Event{Type: "mute", User: u.Wrap()})
+}
+
+// BroadcastEventUnmute sends microphone unmute event to everyone
+func (u *User) BroadcastEventUnmute() error {
+	return u.BroadcastEvent(Event{Type: "unmute", User: u.Wrap()})
+}
+
 // SendErr sends error in json format to web socket
 func (u *User) SendErr(err error) error {
 	return u.SendEvent(Event{Type: "error", Desc: fmt.Sprint(err)})
@@ -237,7 +248,6 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 	if err != nil {
 		return err
 	}
-
 	u.log("handle event", event.Type)
 	if event.Type == "offer" {
 		if event.Offer == nil {
@@ -262,12 +272,17 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		u.pc.AddICECandidate(*event.Candidate)
 		return nil
 	} else if event.Type == "request_offer" {
-		u.log("request_offer")
 		u.SendInitialOffer()
+		return nil
+	} else if event.Type == "mute" {
+		u.BroadcastEventMute()
+		return nil
+	} else if event.Type == "unmute" {
+		u.BroadcastEventUnmute()
 		return nil
 	}
 
-	return u.SendErr(errors.New("not implemented"))
+	return u.SendErr(errNotImplemented)
 }
 
 // SendInitialOffer adds a all tracks in the room and creates an offer

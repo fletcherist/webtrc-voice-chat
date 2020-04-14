@@ -7,4 +7,5 @@
 - [ ] remove track from all room users when user leaves chat
 - [x] support `user_join`, `user_leave` events
 - [x] random emoji as face-like. `user`
-- [ ] `room` event when user joins the room
+- [x] `room` event when user joins the room
+- [ ] event `mute` `unmute` for microphone
