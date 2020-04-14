@@ -81,6 +81,7 @@ type User struct {
 // UserInfo contains some user data
 type UserInfo struct {
 	Emoji string `json:"emoji"` // emoji-face like on clients (for test)
+	Mute  bool   `json:"mute"`
 }
 
 // UserWrap represents user object sent to client
@@ -275,9 +276,11 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		u.SendInitialOffer()
 		return nil
 	} else if event.Type == "mute" {
+		u.info.Mute = true
 		u.BroadcastEventMute()
 		return nil
 	} else if event.Type == "unmute" {
+		u.info.Mute = false
 		u.BroadcastEventUnmute()
 		return nil
 	}
@@ -570,6 +573,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 
 		info: UserInfo{
 			Emoji: emojis[rand.Intn(len(emojis))],
+			Mute:  true, // user is muted by default
 		},
 	}
 
