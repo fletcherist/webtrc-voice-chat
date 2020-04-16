@@ -503,13 +503,8 @@ func (u *User) GetOutTracks() map[uint32]*webrtc.Track {
 	return u.outTracks
 }
 
-// AddTrack adds track dynamically with renegotiation
+// AddTrack adds track to peer connection
 func (u *User) AddTrack(ssrc uint32) error {
-	// u.outTracksLock.Lock()
-	// if _, alreadExist := u.outTracks[ssrc]; alreadExist {
-	// 	return errors.New("track already added")
-	// }
-	// u.outTracksLock.Unlock()
 	track, err := u.pc.NewTrack(webrtc.DefaultPayloadTypeOpus, ssrc, string(ssrc), string(ssrc))
 	if err != nil {
 		return err
@@ -558,7 +553,7 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 
 	emojis := []string{
 		"😎", "🧐", "🤡", "👻", "😷", "🤗", "😏",
-		"👽", "👨‍🚀", "🐺", "🐯", "🦁", "🐶", "🧐",
+		"👽", "👨‍🚀", "🐺", "🐯", "🦁", "🐶",
 	}
 
 	user := &User{
