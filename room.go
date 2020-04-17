@@ -12,6 +12,7 @@ type broadcastMsg struct {
 // Room maintains the set of active clients and broadcasts messages to the
 // clients.
 type Room struct {
+	Name      string
 	users     map[string]*User
 	broadcast chan broadcastMsg
 	join      chan *User // Register requests from the clients.
@@ -20,7 +21,9 @@ type Room struct {
 
 // RoomWrap is a public representation of a room
 type RoomWrap struct {
-	Users []*UserWrap `json:"users"`
+	Users  []*UserWrap `json:"users"`
+	Name   string      `json:"name"`
+	Online int         `json:"online"`
 }
 
 // Wrap returns public version of room
@@ -37,17 +40,20 @@ func (r *Room) Wrap(me *User) *RoomWrap {
 	}
 
 	return &RoomWrap{
-		Users: usersWrap,
+		Users:  usersWrap,
+		Name:   r.Name,
+		Online: len(usersWrap),
 	}
 }
 
 // NewRoom creates new room
-func NewRoom() *Room {
+func NewRoom(name string) *Room {
 	return &Room{
 		broadcast: make(chan broadcastMsg),
 		join:      make(chan *User),
 		leave:     make(chan *User),
 		users:     make(map[string]*User),
+		Name:      name,
 	}
 }
 
@@ -143,7 +149,7 @@ func (r *Rooms) GetOrCreate(roomID string) *Room {
 	if err == nil {
 		return room
 	}
-	newRoom := NewRoom()
+	newRoom := NewRoom(roomID)
 	r.AddRoom(roomID, newRoom)
 	go newRoom.run()
 	return newRoom
@@ -170,17 +176,18 @@ func (r *Rooms) RemoveRoom(roomID string) error {
 
 // RoomsStats is an app global statistics
 type RoomsStats struct {
-	Users int `json:"users"`
-	Rooms int `json:"rooms"`
+	Online int         `json:"online"`
+	Rooms  []*RoomWrap `json:"rooms"`
 }
 
 // GetStats get app statistics
 func (r *Rooms) GetStats() RoomsStats {
 	stats := RoomsStats{
-		Rooms: len(r.rooms),
+		Rooms: []*RoomWrap{},
 	}
 	for _, room := range r.rooms {
-		stats.Users += room.GetUsersCount()
+		stats.Online += room.GetUsersCount()
+		stats.Rooms = append(stats.Rooms, room.Wrap(nil))
 	}
 	return stats
 }

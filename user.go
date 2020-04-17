@@ -102,6 +102,7 @@ func (u *User) Wrap() *UserWrap {
 func (u *User) readPump() {
 	defer func() {
 		u.stop = true
+		u.pc.Close()
 		u.room.Leave(u)
 		u.conn.Close()
 	}()
@@ -138,9 +139,8 @@ func (u *User) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		u.conn.Close()
 		u.stop = true
-		// u.pc.Close()
+		u.conn.Close()
 	}()
 	for {
 		select {
@@ -272,9 +272,6 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 		u.log("adding candidate")
 		u.pc.AddICECandidate(*event.Candidate)
 		return nil
-	} else if event.Type == "request_offer" {
-		u.SendInitialOffer()
-		return nil
 	} else if event.Type == "mute" {
 		u.info.Mute = true
 		u.BroadcastEventMute()
@@ -286,33 +283,6 @@ func (u *User) HandleEvent(eventRaw []byte) error {
 	}
 
 	return u.SendErr(errNotImplemented)
-}
-
-// SendInitialOffer adds a all tracks in the room and creates an offer
-func (u *User) SendInitialOffer() error {
-	// add receive only transciever to get user microphone audio
-	_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
-	if err != nil {
-		return err
-	}
-
-	tracks := u.GetRoomTracks()
-	fmt.Println("attach ", len(tracks), "tracks to new user")
-	u.log("new user add tracks", len(tracks))
-	for _, track := range tracks {
-		err := u.AddTrack(track.SSRC())
-		if err != nil {
-			log.Println("ERROR Add remote track as peerConnection local track", err)
-			panic(err)
-		}
-	}
-
-	err = u.SendOffer()
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // GetRoomTracks returns list of room incoming tracks
@@ -348,6 +318,16 @@ func (u *User) supportOpus(offer webrtc.SessionDescription) bool {
 func (u *User) HandleOffer(offer webrtc.SessionDescription) error {
 	if ok := u.supportOpus(offer); !ok {
 		return errors.New("remote peer does not support opus codec")
+	}
+
+	if len(u.pc.GetTransceivers()) == 0 {
+		// add receive only transciever to get user microphone audio
+		_, err := u.pc.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{
+			Direction: webrtc.RTPTransceiverDirectionRecvonly,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	// Set the remote SessionDescription
@@ -585,14 +565,43 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		log.Printf("Connection State has changed %s \n", connectionState.String())
 		if connectionState == webrtc.ICEConnectionStateConnected {
 			log.Println("user joined")
-			// room.MembersCount++
-			log.Println("now members count is", len(user.room.GetUsers()))
+			tracks := user.GetRoomTracks()
+			fmt.Println("attach ", len(tracks), "tracks to new user")
+			user.log("new user add tracks", len(tracks))
+			for _, track := range tracks {
+				err := user.AddTrack(track.SSRC())
+				if err != nil {
+					log.Println("ERROR Add remote track as peerConnection local track", err)
+					panic(err)
+				}
+			}
+			err = user.SendOffer()
+			if err != nil {
+				panic(err)
+			}
 		} else if connectionState == webrtc.ICEConnectionStateDisconnected ||
 			connectionState == webrtc.ICEConnectionStateFailed ||
 			connectionState == webrtc.ICEConnectionStateClosed {
-			log.Println("user leaved")
-			// delete(r.Users, user.ID)
-			log.Println("now members count is", len(user.room.GetUsers()))
+
+			user.stop = true
+			senders := user.pc.GetSenders()
+			for _, roomUser := range user.room.GetOtherUsers(user) {
+				user.log("removing tracks from user")
+				for _, sender := range senders {
+					ssrc := sender.Track().SSRC()
+
+					roomUserSenders := roomUser.pc.GetSenders()
+					for _, roomUserSender := range roomUserSenders {
+						if roomUserSender.Track().SSRC() == ssrc {
+							err := roomUser.pc.RemoveTrack(roomUserSender)
+							if err != nil {
+								panic(err)
+							}
+						}
+					}
+				}
+			}
+
 		}
 	})
 
@@ -607,9 +616,8 @@ func serveWs(rooms *Rooms, w http.ResponseWriter, r *http.Request) {
 		}
 
 		user.inTracks[remoteTrack.SSRC()] = remoteTrack
-
 		for _, roomUser := range user.room.GetOtherUsers(user) {
-			log.Println("add remote track (user: ", user.ID, ") ", "track to user ", roomUser.ID)
+			log.Println("add remote track", fmt.Sprintf("(user: %s)", user.ID), "track to user ", roomUser.ID)
 			if err := roomUser.AddTrack(remoteTrack.SSRC()); err != nil {
 				log.Println(err)
 				continue
